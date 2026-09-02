@@ -1,12 +1,13 @@
 name: setup-pulumi
 description: >
-  Reuse the Pulumi CLI from the shared runner tool cache (NAS-backed
-  RUNNER_TOOL_CACHE): when the requested version is present, prepend its
-  binary directory to GITHUB_PATH so the first pulumi/actions@v6 call of the
-  job hits its "already installed" fast path and skips the delete/re-download
-  cycle (and its dependency on api.pulumi.com connectivity). When the version
-  is not cached, this action does nothing; pulumi/actions installs as usual
-  and its own tool-cache registration makes future jobs hit the fast path.
+  Make the requested Pulumi CLI available for the job: reuse it from the
+  shared runner tool cache (NAS-backed RUNNER_TOOL_CACHE) when present, then
+  run pulumi/actions@v6 in install-only mode. On a cache hit that install is
+  a no-op ("already installed ... Skipping download", no api.pulumi.com
+  access); on a miss it installs as usual and registers the version into the
+  tool cache, warming it for later jobs. Either way pulumi is on GITHUB_PATH
+  for the rest of the job, so later pulumi/actions preview/up steps also skip
+  their reinstall.
 
 inputs:
   pulumi-version:
@@ -44,3 +45,8 @@ runs:
         else
           echo "pulumi v$version not found in tool cache ($dest); pulumi/actions will install it"
         fi
+
+    - name: Install Pulumi CLI
+      uses: pulumi/actions@v6
+      with:
+        pulumi-version: ${{ inputs.pulumi-version }}
