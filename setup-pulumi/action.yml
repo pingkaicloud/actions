@@ -1,0 +1,71 @@
+name: setup-pulumi
+description: >
+  Reuse the Pulumi CLI from the shared runner tool cache (NAS-backed
+  RUNNER_TOOL_CACHE) or install the requested version into it on first use,
+  then prepend the binary directory to GITHUB_PATH so the first
+  pulumi/actions@v6 call in the job hits its "already installed" fast path
+  and skips the delete/re-download cycle (which also removes the runtime
+  dependency on api.pulumi.com connectivity).
+
+inputs:
+  pulumi-version:
+    description: >
+      Exact Pulumi CLI version, e.g. 3.228.0. A leading "v" is accepted.
+      Must match the version pinned by the pulumi/actions steps in the job.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Reuse or install Pulumi into the runner tool cache
+      shell: bash
+      env:
+        PULUMI_VERSION_INPUT: ${{ inputs.pulumi-version }}
+      run: |
+        set -euo pipefail
+
+        version="${PULUMI_VERSION_INPUT#v}"
+        case "$version" in
+          ''|*[!0-9.]*) echo "::error::invalid pulumi-version: ${PULUMI_VERSION_INPUT}" && exit 1 ;;
+        esac
+        case "$(uname -m)" in
+          x86_64) arch=x64 ;;
+          aarch64|arm64) arch=arm64 ;;
+          *) echo "::error::unsupported architecture $(uname -m)" && exit 1 ;;
+        esac
+
+        cache_root="${RUNNER_TOOL_CACHE:-/opt/hostedtoolcache}"
+        dest="$cache_root/pulumi/$version/$arch"
+
+        if [ -x "$dest/pulumi" ] && [ "$("$dest/pulumi" version 2>/dev/null)" = "v$version" ]; then
+          echo "Reusing cached pulumi v$version at $dest"
+        else
+          echo "Installing pulumi v$version into tool cache at $dest"
+          # Stage on the same filesystem as the cache so the final publish is
+          # an atomic rename; concurrent first-time installs then race only on
+          # the rename and never expose a half-written directory.
+          mkdir -p "$cache_root/pulumi"
+          stage="$(mktemp -d "$cache_root/pulumi/.stage.$$.XXXXXXXX")"
+          cleanup() { rm -rf "$stage" "$old"; }
+          old=""
+          trap cleanup EXIT
+
+          url="https://get.pulumi.com/releases/sdk/pulumi-v${version}-linux-${arch}.tar.gz"
+          echo "Downloading $url"
+          curl -fsSL --retry 3 --connect-timeout 30 -o "$stage/pulumi.tar.gz" "$url"
+          tar -xzf "$stage/pulumi.tar.gz" -C "$stage"
+          rm -f "$stage/pulumi.tar.gz"
+          [ -x "$stage/pulumi/pulumi" ] || { echo "::error::unexpected tarball layout" && exit 1; }
+          "$stage/pulumi/pulumi" version | grep -qx "v$version"
+
+          if [ -e "$dest" ]; then
+            # Replace a missing/broken/partial previous install.
+            old="$cache_root/pulumi/.old.$$.XXXXXXXX"
+            mv "$dest" "$old"
+          fi
+          mv "$stage/pulumi" "$dest"
+          echo "Installed: $("$dest/pulumi" version)"
+        fi
+
+        echo "$dest" >> "$GITHUB_PATH"
+        echo "Added $dest to GITHUB_PATH"

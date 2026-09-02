@@ -9,6 +9,7 @@ with the job token).
 | Action | Purpose |
 | --- | --- |
 | [`nas-cache`](nas-cache/) | Per-repo Go/npm/pip caches on the shared runner NAS (`${RUNNER_CACHE}/<org>/<repo>/...`) |
+| [`setup-pulumi`](setup-pulumi/) | Reuse/install the Pulumi CLI in the shared runner tool cache and prepend it to `GITHUB_PATH` so `pulumi/actions` skips its reinstall |
 
 ## Usage
 
@@ -19,6 +20,19 @@ with the job token).
     npm-cache-key: npm-custom-key
     pip-cache-key: pip-custom-key
 ```
+
+```yaml
+- uses: pingkaicloud/actions/setup-pulumi@v1
+  with:
+    pulumi-version: '3.228.0'
+```
+
+`setup-pulumi` must run before the first `pulumi/actions` step of the job and
+pin the same version. It prepends `$RUNNER_TOOL_CACHE/pulumi/<version>/<arch>`
+to `GITHUB_PATH`: on cache hit `pulumi/actions` logs "already installed ...
+Skipping download" and never contacts api.pulumi.com; on miss it downloads
+from get.pulumi.com into the shared tool cache and publishes it with an atomic
+rename, so concurrent jobs never observe a partial install.
 
 Requires the runner scale set to export `RUNNER_CACHE` (NAS mount).
 The NAS mount must provide cross-client file locking because Go coordinates
