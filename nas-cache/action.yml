@@ -13,7 +13,12 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        : "${RUNNER_CACHE:?RUNNER_CACHE is not set; this action requires the shared cache volume}"
+        # Default matches the dependency-cache NAS mount in the runner
+        # scale set; override by exporting RUNNER_CACHE in the pod env.
+        RUNNER_CACHE="${RUNNER_CACHE:-/mnt/dependency-cache}"
+        if ! [ -d "${RUNNER_CACHE}" ]; then
+          echo "::warning::${RUNNER_CACHE} does not exist; the runner pod may not have the NAS cache volume mounted. Caches will not persist."
+        fi
         REPO_DIR="${GITHUB_REPOSITORY}"
         BASE="${RUNNER_CACHE}/${REPO_DIR}"
         mkdir -p "${BASE}/go/pkg/mod" \
