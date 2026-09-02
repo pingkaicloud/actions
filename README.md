@@ -23,13 +23,16 @@ with the job token).
 Requires the runner scale set to export `RUNNER_CACHE` (NAS mount).
 The NAS mount must provide cross-client file locking because Go coordinates
 concurrent module downloads with file locks. Go, npm, and pip caches are
-isolated by repository and their respective cache keys; keys are retained
-until a separate, active-runner-aware cleanup job removes them.
+isolated by repository. Explicit cache keys provide additional isolation;
+keys are retained until a separate, active-runner-aware cleanup job removes them.
 
-All cache-key inputs are optional. Without explicit keys, the action hashes
-the corresponding dependency files (`go.mod` and `go.sum` for Go) and uses a
-stable `*-no-lockfile` key when no matching files exist. Cache keys do not
-support restore prefixes or copying from other keys.
+All cache-key inputs are optional. Without an explicit key, each tool uses its
+repository-scoped fixed `default` directory. Explicit keys use separate
+`keys/<key>` directories and do not support restore prefixes or copying from
+other keys.
+
+The resulting paths are `<repo>/<tool>/default` without a key and
+`<repo>/<tool>/keys/<key>` with an explicit key.
 
 ## Conventions
 

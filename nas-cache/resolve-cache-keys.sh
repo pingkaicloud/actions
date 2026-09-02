@@ -33,42 +33,38 @@ validate_repository() {
 resolve_cache_dir() {
   local cache_name="$1"
   local cache_key="$2"
-  local dependency_hash="$3"
-  local keys_dir
+  local cache_label
+  local parent_dir
 
   if [ -z "${cache_key}" ]; then
-    if [ -n "${dependency_hash}" ]; then
-      cache_key="${cache_name}-${dependency_hash}"
-    else
-      cache_key="${cache_name}-no-lockfile"
-    fi
+    parent_dir="${BASE}/${cache_name}"
+    RESOLVED_CACHE_DIR="${parent_dir}/default"
+    cache_label="default"
+  else
+    validate_component "${cache_key}" "${cache_name} cache key"
+    parent_dir="${BASE}/${cache_name}/keys"
+    RESOLVED_CACHE_DIR="${parent_dir}/${cache_key}"
+    cache_label="key ${cache_key}"
   fi
-  validate_component "${cache_key}" "${cache_name} cache key"
-
-  keys_dir="${BASE}/${cache_name}/keys"
-  RESOLVED_CACHE_DIR="${keys_dir}/${cache_key}"
-  mkdir -p "${keys_dir}"
+  mkdir -p "${parent_dir}"
 
   if [ -L "${RESOLVED_CACHE_DIR}" ]; then
-    fail "${cache_name} cache key path cannot be a symbolic link: ${RESOLVED_CACHE_DIR}"
+    fail "${cache_name} cache path cannot be a symbolic link: ${RESOLVED_CACHE_DIR}"
   fi
   if mkdir "${RESOLVED_CACHE_DIR}" 2>/dev/null; then
-    echo "${cache_name} cache miss: ${cache_key}; created an empty cache"
+    echo "${cache_name} cache miss: ${cache_label}; created an empty cache"
   elif [ -d "${RESOLVED_CACHE_DIR}" ]; then
-    echo "${cache_name} cache exact hit: ${cache_key}"
+    echo "${cache_name} cache hit: ${cache_label}"
   else
-    fail "${cache_name} cache key path is not a directory: ${RESOLVED_CACHE_DIR}"
+    fail "${cache_name} cache path is not a directory: ${RESOLVED_CACHE_DIR}"
   fi
 }
 
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 : "${GITHUB_ENV:?GITHUB_ENV is required}"
 : "${GO_CACHE_KEY:=}"
-: "${GO_DEPENDENCY_HASH:=}"
 : "${NPM_CACHE_KEY:=}"
-: "${NPM_DEPENDENCY_HASH:=}"
 : "${PIP_CACHE_KEY:=}"
-: "${PIP_DEPENDENCY_HASH:=}"
 
 RUNNER_CACHE="${RUNNER_CACHE:-/mnt/dependency-cache}"
 if [[ "${RUNNER_CACHE}" != /* ]] || [[ "${RUNNER_CACHE}" == *$'\n'* ]] || [[ "${RUNNER_CACHE}" == *$'\r'* ]]; then
@@ -80,14 +76,14 @@ fi
 validate_repository
 BASE="${RUNNER_CACHE}/${GITHUB_REPOSITORY}"
 
-resolve_cache_dir "go" "${GO_CACHE_KEY}" "${GO_DEPENDENCY_HASH}"
+resolve_cache_dir "go" "${GO_CACHE_KEY}"
 GO_CACHE_DIR="${RESOLVED_CACHE_DIR}"
 mkdir -p "${GO_CACHE_DIR}/pkg/mod" "${GO_CACHE_DIR}/build"
 
-resolve_cache_dir "npm" "${NPM_CACHE_KEY}" "${NPM_DEPENDENCY_HASH}"
+resolve_cache_dir "npm" "${NPM_CACHE_KEY}"
 NPM_CACHE_DIR="${RESOLVED_CACHE_DIR}"
 
-resolve_cache_dir "pip" "${PIP_CACHE_KEY}" "${PIP_DEPENDENCY_HASH}"
+resolve_cache_dir "pip" "${PIP_CACHE_KEY}"
 PIP_CACHE_DIR="${RESOLVED_CACHE_DIR}"
 
 {
