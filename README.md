@@ -28,11 +28,12 @@ with the job token).
 ```
 
 `setup-pulumi` must run before the first `pulumi/actions` step of the job and
-pin the same version. It prepends `$RUNNER_TOOL_CACHE/pulumi/<version>/<arch>`
-to `GITHUB_PATH`: on cache hit `pulumi/actions` logs "already installed ...
-Skipping download" and never contacts api.pulumi.com; on miss it downloads
-from get.pulumi.com into the shared tool cache and publishes it with an atomic
-rename, so concurrent jobs never observe a partial install.
+pin the same version. It only reads the tool cache: when
+`$RUNNER_TOOL_CACHE/pulumi/<version>/<arch>` holds a working binary it is
+prepended to `GITHUB_PATH`, so `pulumi/actions` logs "already installed ...
+Skipping download" and never contacts api.pulumi.com; when the version is not
+cached yet the action is a no-op and `pulumi/actions` installs it as usual
+(its own tool-cache registration then warms the cache for later jobs).
 
 Requires the runner scale set to export `RUNNER_CACHE` (NAS mount).
 The NAS mount must provide cross-client file locking because Go coordinates
