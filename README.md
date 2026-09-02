@@ -8,7 +8,7 @@ with the job token).
 
 | Action | Purpose |
 | --- | --- |
-| [`nas-cache`](nas-cache/) | Per-repo go/npm/pip caches on the shared runner NAS (`${RUNNER_CACHE}/<org>/<repo>/...`) |
+| [`nas-cache`](nas-cache/) | Per-repo Go/npm/pip caches on the shared runner NAS (`${RUNNER_CACHE}/<org>/<repo>/...`) |
 
 ## Usage
 
@@ -17,6 +17,10 @@ with the job token).
 ```
 
 Requires the runner scale set to export `RUNNER_CACHE` (NAS mount).
+The NAS mount must provide cross-client file locking because Go coordinates
+concurrent module downloads with file locks. npm caches are isolated by
+repository and `npm-cache-key`; keys are retained until a separate,
+active-runner-aware cleanup job removes them.
 
 ## Conventions
 
