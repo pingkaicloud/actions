@@ -1,0 +1,26 @@
+name: nas-cache
+description: >
+  Per-repo dependency caches on the shared runner NAS volume.
+  Sets GOMODCACHE/GOCACHE and npm/pip cache dirs to
+  ${RUNNER_CACHE}/<org>/<repo>/... so repositories never share cache
+  directories; go/npm/pip handle same-repo concurrency across runner
+  pods with their own cache locking.
+
+runs:
+  using: composite
+  steps:
+    - name: Set per-repo cache dirs
+      shell: bash
+      run: |
+        set -euo pipefail
+        : "${RUNNER_CACHE:?RUNNER_CACHE is not set; this action requires the shared cache volume}"
+        REPO_DIR="${GITHUB_REPOSITORY}"
+        BASE="${RUNNER_CACHE}/${REPO_DIR}"
+        mkdir -p "${BASE}/go/pkg/mod" \
+                 "${BASE}/go/build" \
+                 "${BASE}/npm" \
+                 "${BASE}/pip"
+        echo "GOMODCACHE=${BASE}/go/pkg/mod" >> "$GITHUB_ENV"
+        echo "GOCACHE=${BASE}/go/build" >> "$GITHUB_ENV"
+        echo "npm_config_cache=${BASE}/npm" >> "$GITHUB_ENV"
+        echo "PIP_CACHE_DIR=${BASE}/pip" >> "$GITHUB_ENV"
