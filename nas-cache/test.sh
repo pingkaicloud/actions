@@ -3,10 +3,11 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RESOLVER="${SCRIPT_DIR}/resolve-npm-cache.sh"
+RESOLVER="${SCRIPT_DIR}/resolve-cache-keys.sh"
 TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/nas-cache-test.XXXXXX")"
 RUNNER_CACHE="${TEST_ROOT}/cache"
 REPOSITORY="pingkaicloud/example"
+mkdir -p "${RUNNER_CACHE}"
 
 cleanup() {
   rm -rf "${TEST_ROOT}"
@@ -32,57 +33,89 @@ assert_contains() {
 
 run_resolver() {
   local env_file="$1"
-  local key="$2"
-  local lock_hash="$3"
+  local go_key="$2"
+  local npm_key="$3"
+  local pip_key="$4"
+  local go_dependency_hash="$5"
+  local npm_dependency_hash="$6"
+  local pip_dependency_hash="$7"
 
   : > "${env_file}"
   RUNNER_CACHE="${RUNNER_CACHE}" \
   GITHUB_REPOSITORY="${REPOSITORY}" \
   GITHUB_ENV="${env_file}" \
-  NPM_CACHE_KEY="${key}" \
-  DEFAULT_LOCK_HASH="${lock_hash}" \
+  GO_CACHE_KEY="${go_key}" \
+  GO_DEPENDENCY_HASH="${go_dependency_hash}" \
+  NPM_CACHE_KEY="${npm_key}" \
+  NPM_DEPENDENCY_HASH="${npm_dependency_hash}" \
+  PIP_CACHE_KEY="${pip_key}" \
+  PIP_DEPENDENCY_HASH="${pip_dependency_hash}" \
     bash "${RESOLVER}"
 }
 
-keys_dir="${RUNNER_CACHE}/${REPOSITORY}/npm/keys"
+base="${RUNNER_CACHE}/${REPOSITORY}"
 
-# No lockfile gets a stable, explicit cold-cache key.
-run_resolver "${TEST_ROOT}/default.env" "" ""
-assert_dir "${keys_dir}/npm-no-lockfile"
-assert_contains "${TEST_ROOT}/default.env" "npm_config_cache=${keys_dir}/npm-no-lockfile"
+# Missing lock files use stable per-tool keys.
+run_resolver "${TEST_ROOT}/default.env" "" "" "" "" "" ""
+assert_dir "${base}/go/keys/go-no-lockfile/pkg/mod"
+assert_dir "${base}/go/keys/go-no-lockfile/build"
+assert_dir "${base}/npm/keys/npm-no-lockfile"
+assert_dir "${base}/pip/keys/pip-no-lockfile"
+assert_contains "${TEST_ROOT}/default.env" "GOMODCACHE=${base}/go/keys/go-no-lockfile/pkg/mod"
+assert_contains "${TEST_ROOT}/default.env" "GOCACHE=${base}/go/keys/go-no-lockfile/build"
+assert_contains "${TEST_ROOT}/default.env" "npm_config_cache=${base}/npm/keys/npm-no-lockfile"
+assert_contains "${TEST_ROOT}/default.env" "PIP_CACHE_DIR=${base}/pip/keys/pip-no-lockfile"
 
-# The default lockfile hash and an explicit key select separate directories.
-run_resolver "${TEST_ROOT}/hash.env" "" "abc123"
-assert_dir "${keys_dir}/npm-abc123"
-run_resolver "${TEST_ROOT}/custom.env" "npm-cd-release" "ignored"
-assert_dir "${keys_dir}/npm-cd-release"
+# Dependency hashes and explicit keys select independent directories.
+run_resolver "${TEST_ROOT}/hash.env" "" "" "" abc123 def456 ghi789
+assert_dir "${base}/go/keys/go-abc123/pkg/mod"
+assert_dir "${base}/npm/keys/npm-def456"
+assert_dir "${base}/pip/keys/pip-ghi789"
+run_resolver "${TEST_ROOT}/custom.env" "go-custom" "npm-custom" "pip-custom" ignored ignored ignored
+assert_dir "${base}/go/keys/go-custom/pkg/mod"
+assert_dir "${base}/npm/keys/npm-custom"
+assert_dir "${base}/pip/keys/pip-custom"
 
-# An exact hit reuses the same writable directory without copying it.
-printf 'keep\n' > "${keys_dir}/npm-cd-release/marker"
-run_resolver "${TEST_ROOT}/exact.env" "npm-cd-release" "ignored"
-assert_contains "${keys_dir}/npm-cd-release/marker" "keep"
+# An exact hit reuses each same-key writable directory.
+printf 'keep\n' > "${base}/go/keys/go-custom/marker"
+printf 'keep\n' > "${base}/npm/keys/npm-custom/marker"
+printf 'keep\n' > "${base}/pip/keys/pip-custom/marker"
+run_resolver "${TEST_ROOT}/exact.env" "go-custom" "npm-custom" "pip-custom" ignored ignored ignored
+assert_contains "${base}/go/keys/go-custom/marker" "keep"
+assert_contains "${base}/npm/keys/npm-custom/marker" "keep"
+assert_contains "${base}/pip/keys/pip-custom/marker" "keep"
 
 # Unsafe and overlong keys are rejected before constructing paths.
-if run_resolver "${TEST_ROOT}/invalid-key.env" "../escape" "hash" >/dev/null 2>&1; then
+if run_resolver "${TEST_ROOT}/invalid-go.env" "../escape" "safe" "safe" hash hash hash >/dev/null 2>&1; then
+  fail "path-traversing Go key was accepted"
+fi
+if run_resolver "${TEST_ROOT}/invalid-npm.env" "safe" "../escape" "safe" hash hash hash >/dev/null 2>&1; then
   fail "path-traversing npm key was accepted"
 fi
-assert_not_exists "${RUNNER_CACHE}/${REPOSITORY}/npm/escape"
-long_key="$(printf '%0256d' 0 | tr '0' 'a')"
-if run_resolver "${TEST_ROOT}/long-key.env" "${long_key}" "hash" >/dev/null 2>&1; then
-  fail "overlong npm key was accepted"
+if run_resolver "${TEST_ROOT}/invalid-pip.env" "safe" "safe" "../escape" hash hash hash >/dev/null 2>&1; then
+  fail "path-traversing pip key was accepted"
 fi
-ln -s "${TEST_ROOT}" "${keys_dir}/npm-symlink"
-if run_resolver "${TEST_ROOT}/symlink.env" "npm-symlink" "hash" >/dev/null 2>&1; then
+assert_not_exists "${base}/go/escape"
+assert_not_exists "${base}/npm/escape"
+assert_not_exists "${base}/pip/escape"
+long_key="$(printf '%0256d' 0 | tr '0' 'a')"
+if run_resolver "${TEST_ROOT}/long-key.env" "${long_key}" "safe" "safe" hash hash hash >/dev/null 2>&1; then
+  fail "overlong Go key was accepted"
+fi
+ln -s "${TEST_ROOT}" "${base}/npm/keys/npm-symlink"
+if run_resolver "${TEST_ROOT}/symlink.env" "safe" "npm-symlink" "safe" hash hash hash >/dev/null 2>&1; then
   fail "symbolic-link npm key was accepted"
 fi
 
-# Concurrent cold starts both succeed and converge on the same directory.
-run_resolver "${TEST_ROOT}/concurrent-1.env" "npm-concurrent" "hash" > "${TEST_ROOT}/concurrent-1.log" &
+# Concurrent cold starts converge on the same per-tool directories.
+run_resolver "${TEST_ROOT}/concurrent-1.env" "go-concurrent" "npm-concurrent" "pip-concurrent" hash hash hash > "${TEST_ROOT}/concurrent-1.log" &
 pid1=$!
-run_resolver "${TEST_ROOT}/concurrent-2.env" "npm-concurrent" "hash" > "${TEST_ROOT}/concurrent-2.log" &
+run_resolver "${TEST_ROOT}/concurrent-2.env" "go-concurrent" "npm-concurrent" "pip-concurrent" hash hash hash > "${TEST_ROOT}/concurrent-2.log" &
 pid2=$!
 wait "${pid1}"
 wait "${pid2}"
-assert_dir "${keys_dir}/npm-concurrent"
+assert_dir "${base}/go/keys/go-concurrent/pkg/mod"
+assert_dir "${base}/npm/keys/npm-concurrent"
+assert_dir "${base}/pip/keys/pip-concurrent"
 
 echo "PASS: nas-cache resolver"

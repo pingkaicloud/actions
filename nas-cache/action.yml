@@ -1,46 +1,40 @@
 name: nas-cache
 description: >
   Per-repo dependency caches on the shared runner NAS volume.
-  Go and pip caches live in plain per-repo directories. The npm cache
-  is isolated by repository and cache key under npm/keys/<key>.
-  Cache expiry must be handled by a separate job that coordinates with
-  active runners.
+  Go, npm, and pip caches are isolated by repository and cache key.
+  Cache expiry must be handled by a separate job that coordinates
+  with active runners.
 
 inputs:
+  go-cache-key:
+    description: >
+      Go cache key. Defaults to go-<hash of go.mod and go.sum files> in the calling
+      workspace, or go-no-lockfile when none exist.
+    default: ""
   npm-cache-key:
     description: >
       npm cache key. Defaults to npm-<hash of package-lock.json files>
       in the calling workspace, or npm-no-lockfile when none exist.
     default: ""
+  pip-cache-key:
+    description: >
+      pip cache key. Defaults to pip-<hash of common Python dependency
+      files> in the calling workspace, or pip-no-lockfile when none exist.
+    default: ""
+
 runs:
   using: composite
   steps:
-    - name: Set per-repo cache dirs
-      shell: bash
-      run: |
-        set -euo pipefail
-        # Default matches the dependency-cache NAS mount in the runner
-        # scale set; override by exporting RUNNER_CACHE in the pod env.
-        RUNNER_CACHE="${RUNNER_CACHE:-/mnt/dependency-cache}"
-        if ! [ -d "${RUNNER_CACHE}" ]; then
-          echo "::warning::${RUNNER_CACHE} does not exist; the runner pod may not have the NAS cache volume mounted. Caches will not persist."
-        fi
-        REPO_DIR="${GITHUB_REPOSITORY}"
-        BASE="${RUNNER_CACHE}/${REPO_DIR}"
-        mkdir -p "${BASE}/go/pkg/mod" \
-                 "${BASE}/go/build" \
-                 "${BASE}/npm/keys" \
-                 "${BASE}/pip"
-        echo "GOMODCACHE=${BASE}/go/pkg/mod" >> "$GITHUB_ENV"
-        echo "GOCACHE=${BASE}/go/build" >> "$GITHUB_ENV"
-        echo "PIP_CACHE_DIR=${BASE}/pip" >> "$GITHUB_ENV"
-
-    - name: Resolve npm cache key
+    - name: Resolve per-repo cache keys
       shell: bash
       env:
         ACTION_PATH: ${{ github.action_path }}
+        GO_CACHE_KEY: ${{ inputs.go-cache-key }}
+        GO_DEPENDENCY_HASH: ${{ hashFiles('**/go.mod', '**/go.sum') }}
         NPM_CACHE_KEY: ${{ inputs.npm-cache-key }}
-        DEFAULT_LOCK_HASH: ${{ hashFiles('**/package-lock.json') }}
+        NPM_DEPENDENCY_HASH: ${{ hashFiles('**/package-lock.json') }}
+        PIP_CACHE_KEY: ${{ inputs.pip-cache-key }}
+        PIP_DEPENDENCY_HASH: ${{ hashFiles('**/requirements*.txt', '**/requirements*.in', '**/constraints*.txt', '**/pyproject.toml', '**/poetry.lock', '**/Pipfile.lock', '**/uv.lock', '**/setup.py', '**/setup.cfg') }}
       run: |
         set -euo pipefail
-        bash "${ACTION_PATH}/resolve-npm-cache.sh"
+        bash "${ACTION_PATH}/resolve-cache-keys.sh"
