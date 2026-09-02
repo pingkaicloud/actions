@@ -1,10 +1,23 @@
 name: nas-cache
 description: >
   Per-repo dependency caches on the shared runner NAS volume.
-  Sets GOMODCACHE/GOCACHE and npm/pip cache dirs to
-  ${RUNNER_CACHE}/<org>/<repo>/... so repositories never share cache
-  directories; go/npm/pip handle same-repo concurrency across runner
-  pods with their own cache locking.
+  Go/pip caches live in plain per-repo directories (their toolchains
+  are content-addressed and concurrency-safe). The npm cache uses a
+  key/restore-keys mechanism mirroring actions/cache: caches are
+  stored under npm/keys/<key>, an exact hit is reused as-is, and a
+  new key is seeded (hard-linked) from the newest restore-key match.
+
+inputs:
+  npm-cache-key:
+    description: >
+      npm cache key. Defaults to npm-<hash of package-lock.json files>
+      in the calling workspace.
+    default: ""
+  npm-restore-keys:
+    description: >
+      Newline- or space-separated restore key prefixes; the newest
+      matching existing key seeds a new key when an exact hit misses.
+    default: "npm-"
 
 runs:
   using: composite
@@ -23,9 +36,65 @@ runs:
         BASE="${RUNNER_CACHE}/${REPO_DIR}"
         mkdir -p "${BASE}/go/pkg/mod" \
                  "${BASE}/go/build" \
-                 "${BASE}/npm" \
+                 "${BASE}/npm/keys" \
                  "${BASE}/pip"
         echo "GOMODCACHE=${BASE}/go/pkg/mod" >> "$GITHUB_ENV"
         echo "GOCACHE=${BASE}/go/build" >> "$GITHUB_ENV"
-        echo "npm_config_cache=${BASE}/npm" >> "$GITHUB_ENV"
         echo "PIP_CACHE_DIR=${BASE}/pip" >> "$GITHUB_ENV"
+
+    - name: Resolve npm cache key
+      shell: bash
+      env:
+        NPM_CACHE_KEY: ${{ inputs.npm-cache-key }}
+        NPM_RESTORE_KEYS: ${{ inputs.npm-restore-keys }}
+        DEFAULT_LOCK_HASH: ${{ hashFiles('**/package-lock.json') }}
+      run: |
+        set -euo pipefail
+        BASE="${RUNNER_CACHE:-/mnt/dependency-cache}/${GITHUB_REPOSITORY}/npm"
+        KEYS_DIR="${BASE}/keys"
+        mkdir -p "${KEYS_DIR}"
+
+        if [ -z "${NPM_CACHE_KEY}" ]; then
+          NPM_CACHE_KEY="npm-${DEFAULT_LOCK_HASH}"
+        fi
+        KEY_DIR="${KEYS_DIR}/${NPM_CACHE_KEY}"
+
+        if [ -d "${KEY_DIR}/_cacache" ]; then
+          echo "npm cache exact hit: ${NPM_CACHE_KEY}"
+        else
+          # Seed from the newest restore-key match (hard links; npm
+          # cacache only adds new content-addressed files, so shared
+          # inodes with the seeding key are never mutated).
+          seeded=""
+          for cand in $(ls -1t "${KEYS_DIR}" 2>/dev/null); do
+            for prefix in ${NPM_RESTORE_KEYS}; do
+              if [[ "${cand}" == "${prefix}"* ]]; then
+                # Seed via a temp dir + atomic rename so concurrent jobs
+                # that miss on the same key cannot interleave copies.
+                tmp="${KEY_DIR}.seed.$$"
+                if cp -al "${KEYS_DIR}/${cand}" "${tmp}" 2>/dev/null \
+                   && mv -T "${tmp}" "${KEY_DIR}" 2>/dev/null; then
+                  seeded="${cand}"
+                else
+                  rm -rf "${tmp}"
+                  # Another job created the key in the meantime; reuse it.
+                  seeded="${cand} (concurrent)"
+                fi
+                break 2
+              fi
+            done
+          done
+          if [ -n "${seeded}" ]; then
+            echo "npm cache miss (${NPM_CACHE_KEY}); seeded from ${seeded}"
+          else
+            echo "npm cache miss (${NPM_CACHE_KEY}); cold start"
+            mkdir -p "${KEY_DIR}"
+          fi
+        fi
+
+        # Housekeeping: drop keys untouched for 14 days. A run refreshes
+        # mtime via the hard-linked seed only on reuse, so abandoned
+        # lockfile hashes age out naturally.
+        find "${KEYS_DIR}" -mindepth 1 -maxdepth 1 -type d -mtime +14 -exec rm -rf {} + 2>/dev/null || true
+
+        echo "npm_config_cache=${KEY_DIR}" >> "$GITHUB_ENV"
