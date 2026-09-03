@@ -91,10 +91,23 @@ resolve_cache_dir "pulumi" "${PULUMI_CACHE_KEY}"
 PULUMI_CACHE_DIR="${RESOLVED_CACHE_DIR}"
 mkdir -p "${PULUMI_CACHE_DIR}/plugins"
 
+# Share only the plugin directory. PULUMI_HOME itself must stay pod-local:
+# concurrent jobs of the same repository log in to different Pulumi backends
+# (e.g. with and without ?profile=...), and a shared credentials.json lets
+# them clobber each other's "current" backend.
+pulumi_plugins="${HOME:-/home/runner}/.pulumi/plugins"
+if [ -L "${pulumi_plugins}" ]; then
+  ln -sfn "${PULUMI_CACHE_DIR}/plugins" "${pulumi_plugins}"
+elif [ -e "${pulumi_plugins}" ]; then
+  echo "::warning::${pulumi_plugins} already exists and is not a symlink; leaving it in place, plugins will not be shared"
+else
+  mkdir -p "${HOME:-/home/runner}/.pulumi"
+  ln -s "${PULUMI_CACHE_DIR}/plugins" "${pulumi_plugins}"
+fi
+
 {
   echo "GOMODCACHE=${GO_CACHE_DIR}/pkg/mod"
   echo "GOCACHE=${GO_CACHE_DIR}/build"
   echo "npm_config_cache=${NPM_CACHE_DIR}"
   echo "PIP_CACHE_DIR=${PIP_CACHE_DIR}"
-  echo "PULUMI_HOME=${PULUMI_CACHE_DIR}"
 } >> "${GITHUB_ENV}"

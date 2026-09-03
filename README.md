@@ -22,11 +22,14 @@ with the job token).
     pulumi-cache-key: pulumi-custom-key
 ```
 
-The `pulumi-cache-key` input exports `PULUMI_HOME` pointing at the resolved
+The `pulumi-cache-key` input symlinks `~/.pulumi/plugins` at the resolved
 cache directory (`<repo>/pulumi/default` or `keys/<key>`), so downloaded
 resource plugins persist on the NAS instead of refetching ~475MB per fresh
-runner pod. Plugin downloads are guarded by Pulumi's per-plugin lock files;
-the NFSv4.0 PV provides the cross-client file locks they rely on.
+runner pod. `PULUMI_HOME` itself stays pod-local: concurrent jobs of the
+same repository log in to different Pulumi backends, and a shared
+credentials.json would let them clobber each other's current backend.
+Plugin downloads are guarded by Pulumi's per-plugin lock files; the
+NFSv4.0 PV provides the cross-client file locks they rely on.
 
 ```yaml
 - uses: pingkaicloud/actions/setup-pulumi@v1

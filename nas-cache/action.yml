@@ -20,7 +20,7 @@ inputs:
     default: ""
   pulumi-cache-key:
     description: >
-      Optional Pulumi cache key (PULUMI_HOME, holds downloaded plugins).
+      Optional Pulumi cache key (~/.pulumi/plugins symlink, holds downloaded plugins).
       When omitted, uses the repository's fixed Pulumi cache.
     default: ""
 
