@@ -75,7 +75,13 @@ if ! [ -d "${RUNNER_CACHE}" ]; then
   echo "::warning::${RUNNER_CACHE} does not exist; the runner pod may not have the NAS cache volume mounted. Caches will not persist."
 fi
 validate_repository
-BASE="${RUNNER_CACHE}/${GITHUB_REPOSITORY}"
+# REPO_CACHE can be preset to share or relocate the whole per-repo cache root
+# (e.g. buildx local cache backends); it defaults to the per-repo NAS path.
+: "${REPO_CACHE:=${RUNNER_CACHE}/${GITHUB_REPOSITORY}}"
+if [[ "${REPO_CACHE}" != /* ]] || [[ "${REPO_CACHE}" == *$'\n'* ]] || [[ "${REPO_CACHE}" == *$'\r'* ]]; then
+  fail "REPO_CACHE must be an absolute path without newlines"
+fi
+BASE="${REPO_CACHE}"
 
 resolve_cache_dir "go" "${GO_CACHE_KEY}"
 GO_CACHE_DIR="${RESOLVED_CACHE_DIR}"
@@ -106,6 +112,7 @@ else
 fi
 
 {
+  echo "REPO_CACHE=${BASE}"
   echo "GOMODCACHE=${GO_CACHE_DIR}/pkg/mod"
   echo "GOCACHE=${GO_CACHE_DIR}/build"
   echo "npm_config_cache=${NPM_CACHE_DIR}"
