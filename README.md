@@ -8,7 +8,7 @@ with the job token).
 
 | Action | Purpose |
 | --- | --- |
-| [`nas-cache`](nas-cache/) | Per-repo Go/npm/pip caches on the shared runner NAS (`${RUNNER_CACHE}/<org>/<repo>/...`) |
+| [`nas-cache`](nas-cache/) | Per-repo Go/npm/pip/Pulumi caches on the shared runner NAS (`${RUNNER_CACHE}/<org>/<repo>/...`) |
 | [`setup-pulumi`](setup-pulumi/) | Reuse/install the Pulumi CLI in the shared runner tool cache and prepend it to `GITHUB_PATH` so `pulumi/actions` skips its reinstall |
 
 ## Usage
@@ -19,7 +19,14 @@ with the job token).
     go-cache-key: go-custom-key
     npm-cache-key: npm-custom-key
     pip-cache-key: pip-custom-key
+    pulumi-cache-key: pulumi-custom-key
 ```
+
+The `pulumi-cache-key` input exports `PULUMI_HOME` pointing at the resolved
+cache directory (`<repo>/pulumi/default` or `keys/<key>`), so downloaded
+resource plugins persist on the NAS instead of refetching ~475MB per fresh
+runner pod. Plugin downloads are guarded by Pulumi's per-plugin lock files;
+the NFSv4.0 PV provides the cross-client file locks they rely on.
 
 ```yaml
 - uses: pingkaicloud/actions/setup-pulumi@v1

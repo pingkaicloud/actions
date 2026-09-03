@@ -1,8 +1,8 @@
 name: nas-cache
 description: >
   Per-repo dependency caches on the shared runner NAS volume.
-  Go, npm, and pip caches are isolated by repository and optional cache key.
-  Cache expiry must be handled by a separate job that coordinates
+  Go, npm, pip, and Pulumi caches are isolated by repository and optional
+  cache key. Cache expiry must be handled by a separate job that coordinates
   with active runners.
 
 inputs:
@@ -18,6 +18,11 @@ inputs:
     description: >
       Optional pip cache key. When omitted, uses the repository's fixed pip cache.
     default: ""
+  pulumi-cache-key:
+    description: >
+      Optional Pulumi cache key (PULUMI_HOME, holds downloaded plugins).
+      When omitted, uses the repository's fixed Pulumi cache.
+    default: ""
 
 runs:
   using: composite
@@ -29,6 +34,7 @@ runs:
         GO_CACHE_KEY: ${{ inputs.go-cache-key }}
         NPM_CACHE_KEY: ${{ inputs.npm-cache-key }}
         PIP_CACHE_KEY: ${{ inputs.pip-cache-key }}
+        PULUMI_CACHE_KEY: ${{ inputs.pulumi-cache-key }}
       run: |
         set -euo pipefail
         bash "${ACTION_PATH}/resolve-cache-keys.sh"

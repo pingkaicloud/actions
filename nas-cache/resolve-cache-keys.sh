@@ -65,6 +65,7 @@ resolve_cache_dir() {
 : "${GO_CACHE_KEY:=}"
 : "${NPM_CACHE_KEY:=}"
 : "${PIP_CACHE_KEY:=}"
+: "${PULUMI_CACHE_KEY:=}"
 
 RUNNER_CACHE="${RUNNER_CACHE:-/mnt/dependency-cache}"
 if [[ "${RUNNER_CACHE}" != /* ]] || [[ "${RUNNER_CACHE}" == *$'\n'* ]] || [[ "${RUNNER_CACHE}" == *$'\r'* ]]; then
@@ -86,9 +87,14 @@ NPM_CACHE_DIR="${RESOLVED_CACHE_DIR}"
 resolve_cache_dir "pip" "${PIP_CACHE_KEY}"
 PIP_CACHE_DIR="${RESOLVED_CACHE_DIR}"
 
+resolve_cache_dir "pulumi" "${PULUMI_CACHE_KEY}"
+PULUMI_CACHE_DIR="${RESOLVED_CACHE_DIR}"
+mkdir -p "${PULUMI_CACHE_DIR}/plugins"
+
 {
   echo "GOMODCACHE=${GO_CACHE_DIR}/pkg/mod"
   echo "GOCACHE=${GO_CACHE_DIR}/build"
   echo "npm_config_cache=${NPM_CACHE_DIR}"
   echo "PIP_CACHE_DIR=${PIP_CACHE_DIR}"
+  echo "PULUMI_HOME=${PULUMI_CACHE_DIR}"
 } >> "${GITHUB_ENV}"
