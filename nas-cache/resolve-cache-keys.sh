@@ -7,6 +7,15 @@ fail() {
   exit 1
 }
 
+validate_absolute_path() {
+  local value="$1"
+  local label="$2"
+
+  if [[ "${value}" != /* ]] || [[ "${value}" == *$'\n'* ]] || [[ "${value}" == *$'\r'* ]]; then
+    fail "${label} must be an absolute path without newlines"
+  fi
+}
+
 validate_component() {
   local value="$1"
   local label="$2"
@@ -60,17 +69,83 @@ resolve_cache_dir() {
   fi
 }
 
+ensure_directory() {
+  local path="$1"
+  local label="$2"
+
+  if [ -L "${path}" ]; then
+    fail "${label} cannot be a symbolic link: ${path}"
+  fi
+  mkdir -p "${path}"
+  [ -d "${path}" ] || fail "${label} is not a directory: ${path}"
+}
+
+ensure_directory_link() {
+  local link_path="$1"
+  local target_path="$2"
+  local label="$3"
+
+  if [ -L "${link_path}" ]; then
+    [ "$(readlink "${link_path}")" = "${target_path}" ] \
+      || fail "${label} points to an unexpected target: ${link_path}"
+    return
+  fi
+  [ ! -e "${link_path}" ] || fail "${label} already exists and is not a symbolic link: ${link_path}"
+  ln -s "${target_path}" "${link_path}"
+}
+
+ensure_file() {
+  local path="$1"
+  local label="$2"
+
+  if [ -L "${path}" ]; then
+    fail "${label} cannot be a symbolic link: ${path}"
+  fi
+  if [ -e "${path}" ] && [ ! -f "${path}" ]; then
+    fail "${label} is not a regular file: ${path}"
+  fi
+  touch "${path}"
+  [ -f "${path}" ] || fail "${label} is not a regular file: ${path}"
+}
+
+ensure_file_link() {
+  local link_path="$1"
+  local target_path="$2"
+  local label="$3"
+
+  if [ -L "${link_path}" ]; then
+    [ "$(readlink "${link_path}")" = "${target_path}" ] \
+      || fail "${label} points to an unexpected target: ${link_path}"
+    return
+  fi
+  [ ! -e "${link_path}" ] || fail "${label} already exists and is not a symbolic link: ${link_path}"
+  ln -s "${target_path}" "${link_path}"
+}
+
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 : "${GITHUB_ENV:?GITHUB_ENV is required}"
 : "${GO_CACHE_KEY:=}"
 : "${NPM_CACHE_KEY:=}"
 : "${PIP_CACHE_KEY:=}"
 : "${PULUMI_CACHE_KEY:=}"
+: "${ENABLE_CARGO_CACHE:=false}"
+: "${CARGO_CACHE_KEY:=}"
+: "${ENABLE_LINDERA_CACHE:=false}"
+: "${LINDERA_CACHE_KEY:=}"
+
+case "${ENABLE_CARGO_CACHE}" in
+  true|1) cargo_cache_enabled=true ;;
+  false|0) cargo_cache_enabled=false ;;
+  *) fail "ENABLE_CARGO_CACHE must be true or false" ;;
+esac
+case "${ENABLE_LINDERA_CACHE}" in
+  true|1) lindera_cache_enabled=true ;;
+  false|0) lindera_cache_enabled=false ;;
+  *) fail "ENABLE_LINDERA_CACHE must be true or false" ;;
+esac
 
 RUNNER_CACHE="${RUNNER_CACHE:-/mnt/dependency-cache}"
-if [[ "${RUNNER_CACHE}" != /* ]] || [[ "${RUNNER_CACHE}" == *$'\n'* ]] || [[ "${RUNNER_CACHE}" == *$'\r'* ]]; then
-  fail "RUNNER_CACHE must be an absolute path without newlines"
-fi
+validate_absolute_path "${RUNNER_CACHE}" "RUNNER_CACHE"
 if ! [ -d "${RUNNER_CACHE}" ]; then
   echo "::warning::${RUNNER_CACHE} does not exist; the runner pod may not have the NAS cache volume mounted. Caches will not persist."
 fi
@@ -78,9 +153,7 @@ validate_repository
 # REPO_CACHE can be preset to share or relocate the whole per-repo cache root
 # (e.g. buildx local cache backends); it defaults to the per-repo NAS path.
 : "${REPO_CACHE:=${RUNNER_CACHE}/${GITHUB_REPOSITORY}}"
-if [[ "${REPO_CACHE}" != /* ]] || [[ "${REPO_CACHE}" == *$'\n'* ]] || [[ "${REPO_CACHE}" == *$'\r'* ]]; then
-  fail "REPO_CACHE must be an absolute path without newlines"
-fi
+validate_absolute_path "${REPO_CACHE}" "REPO_CACHE"
 BASE="${REPO_CACHE}"
 
 resolve_cache_dir "go" "${GO_CACHE_KEY}"
@@ -111,10 +184,51 @@ else
   ln -s "${PULUMI_CACHE_DIR}/plugins" "${pulumi_plugins}"
 fi
 
+if [ "${cargo_cache_enabled}" = true ]; then
+  : "${RUNNER_TEMP:?RUNNER_TEMP is required when Cargo caching is enabled}"
+  validate_absolute_path "${RUNNER_TEMP}" "RUNNER_TEMP"
+  : "${GITHUB_PATH:?GITHUB_PATH is required when Cargo caching is enabled}"
+
+  resolve_cache_dir "cargo" "${CARGO_CACHE_KEY}"
+  CARGO_CACHE_DIR="${RESOLVED_CACHE_DIR}"
+  ensure_directory "${CARGO_CACHE_DIR}/registry" "Cargo registry cache"
+  ensure_directory "${CARGO_CACHE_DIR}/git-db" "Cargo git DB cache"
+  ensure_file "${CARGO_CACHE_DIR}/.package-cache" "Cargo download lock"
+  ensure_file "${CARGO_CACHE_DIR}/.package-cache-mutate" "Cargo mutation lock"
+
+  CARGO_HOME="${RUNNER_TEMP}/cargo-home"
+  ensure_directory "${CARGO_HOME}" "job-local Cargo home"
+  ensure_directory "${CARGO_HOME}/git" "job-local Cargo git directory"
+  ensure_directory "${CARGO_HOME}/bin" "job-local Cargo bin directory"
+  ensure_directory_link "${CARGO_HOME}/registry" "${CARGO_CACHE_DIR}/registry" "Cargo registry link"
+  ensure_directory_link "${CARGO_HOME}/git/db" "${CARGO_CACHE_DIR}/git-db" "Cargo git DB link"
+  ensure_file_link "${CARGO_HOME}/.package-cache" "${CARGO_CACHE_DIR}/.package-cache" "Cargo download lock link"
+  ensure_file_link "${CARGO_HOME}/.package-cache-mutate" "${CARGO_CACHE_DIR}/.package-cache-mutate" "Cargo mutation lock link"
+fi
+
+if [ "${lindera_cache_enabled}" = true ]; then
+  resolve_cache_dir "lindera" "${LINDERA_CACHE_KEY}"
+  LINDERA_CACHE_DIR="${RESOLVED_CACHE_DIR}"
+  ensure_directory "${LINDERA_CACHE_DIR}" "Lindera cache"
+  ensure_file "${LINDERA_CACHE_DIR}/.lock" "Lindera cache lock"
+fi
+
 {
   echo "REPO_CACHE=${BASE}"
   echo "GOMODCACHE=${GO_CACHE_DIR}/pkg/mod"
   echo "GOCACHE=${GO_CACHE_DIR}/build"
   echo "npm_config_cache=${NPM_CACHE_DIR}"
   echo "PIP_CACHE_DIR=${PIP_CACHE_DIR}"
+  if [ "${cargo_cache_enabled}" = true ]; then
+    echo "CARGO_HOME=${CARGO_HOME}"
+  fi
+  if [ "${lindera_cache_enabled}" = true ]; then
+    echo "LINDERA_CACHE=${LINDERA_CACHE_DIR}"
+    echo "LINDERA_CACHE_LOCK=${LINDERA_CACHE_DIR}/.lock"
+    echo "LINDERA_CACHE_READY=${LINDERA_CACHE_DIR}/.ready"
+  fi
 } >> "${GITHUB_ENV}"
+
+if [ "${cargo_cache_enabled}" = true ]; then
+  echo "${CARGO_HOME}/bin" >> "${GITHUB_PATH}"
+fi
