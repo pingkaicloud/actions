@@ -1,0 +1,88 @@
+name: setup-rust-toolchain
+description: >
+  Restore a parameter-isolated Rust toolchain from the shared runner tool cache,
+  or install it with dtolnay/rust-toolchain and populate the cache.
+
+inputs:
+  toolchain:
+    description: Rust toolchain specification passed to dtolnay/rust-toolchain.
+    required: true
+  targets:
+    description: Comma-separated target triples passed to dtolnay/rust-toolchain.
+    required: false
+    default: ""
+  target:
+    description: Alias for targets, passed to dtolnay/rust-toolchain.
+    required: false
+    default: ""
+  components:
+    description: Comma-separated components passed to dtolnay/rust-toolchain.
+    required: false
+    default: ""
+  cache-lock-timeout-seconds:
+    description: Maximum time to wait for a concurrent toolchain cache writer.
+    required: false
+    default: "1800"
+
+outputs:
+  name:
+    description: Rustup name of the selected toolchain.
+    value: ${{ steps.output.outputs.name }}
+  cachekey:
+    description: Rustc version cache key reported by dtolnay/rust-toolchain.
+    value: ${{ steps.output.outputs.cachekey }}
+  cache-hit:
+    description: Whether the toolchain was restored from the shared tool cache.
+    value: ${{ steps.restore.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    - id: restore
+      name: Restore Rust toolchain from tool cache
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        RUST_TOOLCHAIN: ${{ inputs.toolchain }}
+        RUST_TARGETS: ${{ inputs.targets }}
+        RUST_TARGET: ${{ inputs.target }}
+        RUST_COMPONENTS: ${{ inputs.components }}
+        CACHE_LOCK_TIMEOUT_SECONDS: ${{ inputs.cache-lock-timeout-seconds }}
+      run: bash "${ACTION_PATH}/toolchain-cache.sh" restore
+
+    - id: install
+      name: Install Rust toolchain
+      if: steps.restore.outputs.cache-hit != 'true'
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ inputs.toolchain }}
+        targets: ${{ inputs.targets }}
+        target: ${{ inputs.target }}
+        components: ${{ inputs.components }}
+
+    - id: save
+      name: Save Rust toolchain to tool cache
+      if: steps.restore.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        RUST_TOOLCHAIN: ${{ inputs.toolchain }}
+        RUST_TARGETS: ${{ inputs.targets }}
+        RUST_TARGET: ${{ inputs.target }}
+        RUST_COMPONENTS: ${{ inputs.components }}
+        CACHE_LOCK_TIMEOUT_SECONDS: ${{ inputs.cache-lock-timeout-seconds }}
+        RUST_TOOLCHAIN_NAME: ${{ steps.install.outputs.name }}
+        RUST_TOOLCHAIN_CACHEKEY: ${{ steps.install.outputs.cachekey }}
+      run: bash "${ACTION_PATH}/toolchain-cache.sh" save
+
+    - id: output
+      name: Export Rust toolchain outputs
+      shell: bash
+      run: |
+        set -euo pipefail
+        : "${RUST_TOOLCHAIN_NAME:?Rust toolchain name was not set}"
+        : "${RUST_TOOLCHAIN_CACHEKEY:?Rust toolchain cache key was not set}"
+        {
+          echo "name=${RUST_TOOLCHAIN_NAME}"
+          echo "cachekey=${RUST_TOOLCHAIN_CACHEKEY}"
+        } >> "${GITHUB_OUTPUT}"
