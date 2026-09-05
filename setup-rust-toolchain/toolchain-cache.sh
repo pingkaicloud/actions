@@ -3,7 +3,7 @@
 set -euo pipefail
 
 readonly CACHE_SCHEMA="rust-toolchain-v1"
-readonly ACTION_REF="dtolnay/rust-toolchain@master"
+readonly ACTION_REF="dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0"
 
 fail() {
   echo "::error::$*" >&2
