@@ -174,4 +174,29 @@ assert_dir "${nolinks_home}/registry/src"
 assert_contains "${TEST_ROOT}/nolinks.env" "CARGO_HOME=${nolinks_home}"
 ! grep -Fq "LINDERA_CACHE=" "${TEST_ROOT}/nolinks.env" || fail "Lindera exported without a key"
 
+# Cargo network config and the crates.io mirror land in the shared CARGO_HOME.
+: > "${TEST_ROOT}/mirror.env"
+CARGO_HOME="${cargo_home}" \
+GITHUB_ENV="${TEST_ROOT}/mirror.env" \
+CRATES_MIRROR=aliyun \
+  bash "${SCRIPT_DIR}/cargo-config.sh"
+assert_contains "${TEST_ROOT}/mirror.env" "CARGO_NET_GIT_FETCH_WITH_CLI=true"
+assert_contains "${TEST_ROOT}/mirror.env" "CARGO_HTTP_TIMEOUT=120"
+assert_contains "${TEST_ROOT}/mirror.env" "CARGO_NET_RETRY=3"
+assert_contains "${cargo_home}/config.toml" "sparse+https://mirrors.aliyun.com/crates.io-index/"
+
+# crates-mirror=none keeps the official registry and writes no config.
+rm -f "${cargo_home}/config.toml"
+: > "${TEST_ROOT}/nomirror.env"
+CARGO_HOME="${cargo_home}" \
+GITHUB_ENV="${TEST_ROOT}/nomirror.env" \
+CRATES_MIRROR=none \
+  bash "${SCRIPT_DIR}/cargo-config.sh"
+assert_not_exists "${cargo_home}/config.toml"
+assert_contains "${TEST_ROOT}/nomirror.env" "CARGO_NET_RETRY=3"
+if CARGO_HOME="${cargo_home}" GITHUB_ENV="${TEST_ROOT}/badmirror.env" CRATES_MIRROR=mirror-x \
+  bash "${SCRIPT_DIR}/cargo-config.sh" >/dev/null 2>&1; then
+  fail "unsupported crates-mirror was accepted"
+fi
+
 echo "PASS: setup-rust-toolchain"
