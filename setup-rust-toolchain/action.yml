@@ -41,6 +41,12 @@ inputs:
       version when changing it. Empty disables the Lindera cache.
     required: false
     default: ""
+  crates-mirror:
+    description: >
+      crates.io registry mirror written into the shared CARGO_HOME config.
+      aliyun (default) or none to keep the official registry.
+    required: false
+    default: "aliyun"
   cache-lock-timeout-seconds:
     description: Maximum time to wait for a concurrent toolchain cache writer.
     required: false
@@ -69,6 +75,12 @@ runs:
         CARGO_CACHE_KEY: ${{ inputs.cargo-cache-key }}
         LINDERA_CACHE_KEY: ${{ inputs.lindera-cache-key }}
       run: bash "${ACTION_PATH}/dependency-cache.sh"
+    - name: Configure Cargo network and crates.io mirror
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        CRATES_MIRROR: ${{ inputs.crates-mirror }}
+      run: bash "${ACTION_PATH}/cargo-config.sh"
     - id: restore
       name: Restore Rust toolchain from tool cache
       shell: bash
