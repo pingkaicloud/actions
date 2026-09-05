@@ -150,6 +150,9 @@ done
 [ -n "${cache_key}" ] || fail "cache directory was not created"
 assert_file "${RUNNER_TEMP}/rust-toolchain-action-ref"
 assert_contains "${RUNNER_TEMP}/rust-toolchain-action-ref" "0123456789abcdef0123456789abcdef01234567"
+claim_file="${RUNNER_TOOL_CACHE}/rust-toolchain/${cache_key}/.installing"
+assert_file "${claim_file}"
+assert_contains "${claim_file}" "owner=${RUNNER_TEMP}"
 mkdir -p "${RUNNER_TEMP}/rustup-home/toolchains/nightly-2026-01-30/bin" "${RUNNER_TEMP}/cargo-home/bin"
 printf 'rustc\n' > "${RUNNER_TEMP}/rustup-home/toolchains/nightly-2026-01-30/bin/rustc"
 cp "${TEST_ROOT}/bin/rustup" "${RUNNER_TEMP}/cargo-home/bin/rustup"
@@ -158,6 +161,7 @@ RUSTUP_HOME="${RUNNER_TEMP}/rustup-home" \
   RUST_TOOLCHAIN_NAME=nightly-2026-01-30 \
   RUST_TOOLCHAIN_CACHEKEY=20260130fake \
   bash "${SCRIPT_DIR}/toolchain-cache.sh" save
+assert_not_exists "${claim_file}"
 
 # The dependency-cache links inside cargo-home must survive a warm restore.
 : > "${GITHUB_OUTPUT}"
@@ -169,11 +173,66 @@ assert_file "${RUNNER_TEMP}/cargo-home/bin/rustup"
 [ -L "${RUNNER_TEMP}/cargo-home/git/db" ] || fail "git/db link lost after restore"
 assert_not_exists "${cargo_cache_dir}/registry/src"
 
-# Different parameters must use a different cache directory.
+# Concurrent miss handling: a second job waits for the first job to publish the
+# bundle instead of installing the same toolchain independently.
 export RUST_COMPONENTS=rustfmt
 : > "${GITHUB_OUTPUT}"
 bash "${SCRIPT_DIR}/toolchain-cache.sh" restore
 grep -Fq 'cache-hit=false' "${GITHUB_OUTPUT}" || fail "different parameters reused the cache"
+second_claim_file=""
+for candidate in "${RUNNER_TOOL_CACHE}"/rust-toolchain/*/.installing; do
+  if [ -f "${candidate}" ]; then
+    second_claim_file="${candidate}"
+    break
+  fi
+done
+[ -n "${second_claim_file}" ] || fail "second cache miss did not create an installation claim"
+
+waiter_temp="${TEST_ROOT}/runner-temp-waiter"
+mkdir -p "${waiter_temp}"
+: > "${TEST_ROOT}/waiter.env"
+: > "${TEST_ROOT}/waiter.output"
+: > "${TEST_ROOT}/waiter.path"
+(
+  RUNNER_TEMP="${waiter_temp}" \
+  GITHUB_ENV="${TEST_ROOT}/waiter.env" \
+  GITHUB_OUTPUT="${TEST_ROOT}/waiter.output" \
+  GITHUB_PATH="${TEST_ROOT}/waiter.path" \
+    bash "${SCRIPT_DIR}/toolchain-cache.sh" restore
+) &
+waiter_pid=$!
+sleep 1
+if ! kill -0 "${waiter_pid}" 2>/dev/null; then
+  fail "concurrent restore did not wait for the installation claim"
+fi
+
+mkdir -p "${RUNNER_TEMP}/rustup-home/toolchains/nightly-2026-01-30/bin" "${RUNNER_TEMP}/cargo-home/bin"
+printf 'rustc\n' > "${RUNNER_TEMP}/rustup-home/toolchains/nightly-2026-01-30/bin/rustc"
+cp "${TEST_ROOT}/bin/rustup" "${RUNNER_TEMP}/cargo-home/bin/rustup"
+RUSTUP_HOME="${RUNNER_TEMP}/rustup-home" \
+  CARGO_HOME="${RUNNER_TEMP}/cargo-home" \
+  RUST_TOOLCHAIN_NAME=nightly-2026-01-30 \
+  RUST_TOOLCHAIN_CACHEKEY=20260130fake-second \
+  bash "${SCRIPT_DIR}/toolchain-cache.sh" save
+wait "${waiter_pid}"
+grep -Fq 'cache-hit=true' "${TEST_ROOT}/waiter.output" \
+  || fail "concurrent restore did not reuse the populated cache"
+assert_not_exists "${second_claim_file}"
+
+# A failed install must clean up its claim so a later job can retry immediately.
+export RUST_COMPONENTS=clippy
+: > "${GITHUB_OUTPUT}"
+bash "${SCRIPT_DIR}/toolchain-cache.sh" restore
+failed_claim_file=""
+for candidate in "${RUNNER_TOOL_CACHE}"/rust-toolchain/*/.installing; do
+  if [ -f "${candidate}" ]; then
+    failed_claim_file="${candidate}"
+    break
+  fi
+done
+[ -n "${failed_claim_file}" ] || fail "failed install did not create an installation claim"
+bash "${SCRIPT_DIR}/toolchain-cache.sh" cleanup
+assert_not_exists "${failed_claim_file}"
 
 # A disabled Cargo cache still exports a job-local CARGO_HOME, without links.
 fresh_temp="${TEST_ROOT}/runner-temp-nolinks"

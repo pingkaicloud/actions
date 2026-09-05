@@ -48,9 +48,13 @@ inputs:
     required: false
     default: "aliyun"
   cache-lock-timeout-seconds:
-    description: Maximum time to wait for a concurrent toolchain cache writer.
+    description: Maximum time to wait for a concurrent toolchain cache writer or installer.
     required: false
     default: "1800"
+  cache-install-lease-seconds:
+    description: Time after which an abandoned toolchain installation claim can be reclaimed.
+    required: false
+    default: "7200"
 
 outputs:
   name:
@@ -91,6 +95,7 @@ runs:
         RUST_TARGET: ${{ inputs.target }}
         RUST_COMPONENTS: ${{ inputs.components }}
         CACHE_LOCK_TIMEOUT_SECONDS: ${{ inputs.cache-lock-timeout-seconds }}
+        CACHE_INSTALL_LEASE_SECONDS: ${{ inputs.cache-install-lease-seconds }}
       run: bash "${ACTION_PATH}/toolchain-cache.sh" restore
 
     - id: install
@@ -114,9 +119,23 @@ runs:
         RUST_TARGET: ${{ inputs.target }}
         RUST_COMPONENTS: ${{ inputs.components }}
         CACHE_LOCK_TIMEOUT_SECONDS: ${{ inputs.cache-lock-timeout-seconds }}
+        CACHE_INSTALL_LEASE_SECONDS: ${{ inputs.cache-install-lease-seconds }}
         RUST_TOOLCHAIN_NAME: ${{ steps.install.outputs.name }}
         RUST_TOOLCHAIN_CACHEKEY: ${{ steps.install.outputs.cachekey }}
       run: bash "${ACTION_PATH}/toolchain-cache.sh" save
+
+    - name: Clean up Rust toolchain cache claim
+      if: always()
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        RUST_TOOLCHAIN: ${{ inputs.toolchain }}
+        RUST_TARGETS: ${{ inputs.targets }}
+        RUST_TARGET: ${{ inputs.target }}
+        RUST_COMPONENTS: ${{ inputs.components }}
+        CACHE_LOCK_TIMEOUT_SECONDS: ${{ inputs.cache-lock-timeout-seconds }}
+        CACHE_INSTALL_LEASE_SECONDS: ${{ inputs.cache-install-lease-seconds }}
+      run: bash "${ACTION_PATH}/toolchain-cache.sh" cleanup
 
     - id: output
       name: Export Rust toolchain outputs

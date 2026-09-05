@@ -6,6 +6,7 @@ readonly CACHE_SCHEMA="rust-toolchain-v1"
 readonly ACTION_REPOSITORY="dtolnay/rust-toolchain"
 readonly ACTION_BRANCH="master"
 readonly ACTION_REF_FILE_NAME="rust-toolchain-action-ref"
+readonly INSTALL_CLAIM_FILE_NAME=".installing"
 ACTION_REF=""
 
 fail() {
@@ -31,6 +32,13 @@ validate_absolute_path() {
 
   [[ "${value}" = /* ]] || fail "${label} must be an absolute path"
   validate_value "${value}" "${label}"
+}
+
+validate_positive_integer() {
+  local value="$1"
+  local label="$2"
+
+  [[ "${value}" =~ ^[1-9][0-9]*$ ]] || fail "${label} must be a positive integer"
 }
 
 resolve_action_ref() {
@@ -153,6 +161,117 @@ release_lock() {
   exec 9>&-
 }
 
+claim_value() {
+  local name="$1"
+  local line
+
+  while IFS= read -r line; do
+    case "${line}" in
+      "${name}"=*) printf '%s\n' "${line#*=}"; return 0 ;;
+    esac
+  done < "${INSTALL_CLAIM_PATH}"
+  return 1
+}
+
+claim_owned_by_current_job() {
+  [ -f "${INSTALL_CLAIM_PATH}" ] || return 1
+  [ "$(claim_value owner || true)" = "${CACHE_OWNER}" ]
+}
+
+claim_is_stale() {
+  local started_at now
+
+  started_at="$(claim_value started_at || true)"
+  if ! [[ "${started_at}" =~ ^[0-9]+$ ]]; then
+    return 0
+  fi
+  now="$(date +%s)"
+  (( now >= started_at && now - started_at >= CACHE_INSTALL_LEASE_SECONDS ))
+}
+
+write_install_claim() {
+  local claim_tmp="${INSTALL_CLAIM_PATH}.tmp.$$"
+
+  {
+    printf 'owner=%s\n' "${CACHE_OWNER}"
+    printf 'started_at=%s\n' "$(date +%s)"
+  } > "${claim_tmp}"
+  mv -f -- "${claim_tmp}" "${INSTALL_CLAIM_PATH}"
+}
+
+remove_owned_install_claim() {
+  if claim_owned_by_current_job; then
+    rm -f -- "${INSTALL_CLAIM_PATH}"
+  fi
+}
+
+set_cache_miss() {
+  echo "RUST_TOOLCHAIN_CACHE_HIT=false" >> "${GITHUB_ENV}"
+  echo "cache-hit=false" >> "${GITHUB_OUTPUT}"
+  echo "Rust toolchain cache miss: ${CACHE_KEY} (installation claim owned by this job)"
+}
+
+restore_bundle() {
+  local toolchain_name toolchain_cachekey
+
+  rm -rf -- "${LOCAL_RUSTUP_HOME}"
+  mkdir -p "${LOCAL_RUSTUP_HOME}"
+  rm -rf -- "${LOCAL_CARGO_HOME}/bin"
+  mkdir -p "${LOCAL_CARGO_HOME}/bin"
+  cp -a "${BUNDLE_DIR}/rustup" "${LOCAL_RUSTUP_HOME}/"
+  cp -a "${BUNDLE_DIR}/cargo/bin/." "${LOCAL_CARGO_HOME}/bin/"
+  toolchain_name="$(manifest_value "${BUNDLE_DIR}/manifest" toolchain_name)"
+  toolchain_cachekey="$(manifest_value "${BUNDLE_DIR}/manifest" rustc_cachekey)"
+  if ! RUSTUP_HOME="${LOCAL_RUSTUP_HOME}" \
+    CARGO_HOME="${LOCAL_CARGO_HOME}" \
+    PATH="${LOCAL_CARGO_HOME}/bin:${PATH}" \
+    rustup run "${toolchain_name}" rustc --version >/dev/null 2>&1; then
+    rm -rf -- "${LOCAL_RUSTUP_HOME}"
+    mkdir -p "${LOCAL_RUSTUP_HOME}"
+    rm -rf -- "${LOCAL_CARGO_HOME}/bin"
+    mkdir -p "${LOCAL_CARGO_HOME}/bin"
+    return 1
+  fi
+  {
+    echo "RUST_TOOLCHAIN_NAME=${toolchain_name}"
+    echo "RUST_TOOLCHAIN_CACHEKEY=${toolchain_cachekey}"
+    echo "RUST_TOOLCHAIN_CACHE_HIT=true"
+  } >> "${GITHUB_ENV}"
+  echo "cache-hit=true" >> "${GITHUB_OUTPUT}"
+  echo "Rust toolchain cache hit: ${CACHE_KEY}"
+}
+
+wait_for_install_claim() {
+  local deadline now
+
+  deadline=$(( $(date +%s) + CACHE_LOCK_TIMEOUT_SECONDS ))
+  while true; do
+    now="$(date +%s)"
+    if (( now >= deadline )); then
+      fail "timed out waiting for Rust toolchain installation claim: ${CACHE_KEY}"
+    fi
+    sleep 5
+
+    if ! acquire_lock "${LOCK_PATH}"; then
+      fail "timed out waiting for Rust toolchain cache lock: ${CACHE_KEY}"
+    fi
+    if cache_valid "${BUNDLE_DIR}" "${CACHE_KEY}"; then
+      if restore_bundle; then
+        release_lock
+        return 0
+      fi
+    fi
+    if [ ! -f "${INSTALL_CLAIM_PATH}" ] || claim_is_stale; then
+      rm -f -- "${INSTALL_CLAIM_PATH}"
+      write_install_claim
+      release_lock
+      set_cache_miss
+      return 0
+    fi
+    release_lock
+  done
+}
+
 prepare_paths() {
   validate_value "${RUST_TOOLCHAIN}" "toolchain"
   validate_value "${RUST_TARGETS}" "targets"
@@ -169,6 +288,9 @@ prepare_paths() {
   CACHE_DIR="${CACHE_ROOT}/rust-toolchain/${CACHE_KEY}"
   BUNDLE_DIR="${CACHE_DIR}/bundle"
   LOCK_PATH="${CACHE_DIR}.lock"
+  INSTALL_CLAIM_PATH="${CACHE_DIR}/${INSTALL_CLAIM_FILE_NAME}"
+  # RUNNER_TEMP is unique for a job and persists across the composite action steps.
+  CACHE_OWNER="${RUNNER_TEMP}"
   # RUSTUP_HOME is job-local and only ever holds this job's toolchain.
   # CARGO_HOME is prepared by dependency-cache.sh (${RUNNER_TEMP}/cargo-home)
   # and may already contain NAS-backed registry/git links, so never wipe it.
@@ -182,9 +304,8 @@ prepare_paths() {
 restore() {
   prepare_paths
 
-  if ! [[ "${CACHE_LOCK_TIMEOUT_SECONDS}" =~ ^[1-9][0-9]*$ ]]; then
-    fail "cache-lock-timeout-seconds must be a positive integer"
-  fi
+  validate_positive_integer "${CACHE_LOCK_TIMEOUT_SECONDS}" "cache-lock-timeout-seconds"
+  validate_positive_integer "${CACHE_INSTALL_LEASE_SECONDS}" "cache-install-lease-seconds"
   if ! command -v flock >/dev/null 2>&1; then
     warn "flock is unavailable; skipping Rust toolchain cache"
     echo "cache-hit=false" >> "${GITHUB_OUTPUT}"
@@ -198,44 +319,27 @@ restore() {
   fi
 
   if ! acquire_lock "${LOCK_PATH}"; then
-    warn "timed out waiting for Rust toolchain cache lock; installing without cache"
-    echo "cache-hit=false" >> "${GITHUB_OUTPUT}"
-    return 0
+    fail "timed out waiting for Rust toolchain cache lock: ${CACHE_KEY}"
   fi
 
   if cache_valid "${BUNDLE_DIR}" "${CACHE_KEY}"; then
-    rm -rf -- "${LOCAL_RUSTUP_HOME}"
-    mkdir -p "${LOCAL_RUSTUP_HOME}"
-    rm -rf -- "${LOCAL_CARGO_HOME}/bin"
-    mkdir -p "${LOCAL_CARGO_HOME}/bin"
-    cp -a "${BUNDLE_DIR}/rustup" "${LOCAL_RUSTUP_HOME}/"
-    cp -a "${BUNDLE_DIR}/cargo/bin/." "${LOCAL_CARGO_HOME}/bin/"
-    toolchain_name="$(manifest_value "${BUNDLE_DIR}/manifest" toolchain_name)"
-    toolchain_cachekey="$(manifest_value "${BUNDLE_DIR}/manifest" rustc_cachekey)"
-    if RUSTUP_HOME="${LOCAL_RUSTUP_HOME}" \
-      CARGO_HOME="${LOCAL_CARGO_HOME}" \
-      PATH="${LOCAL_CARGO_HOME}/bin:${PATH}" \
-      rustup run "${toolchain_name}" rustc --version >/dev/null 2>&1; then
+    if restore_bundle; then
       release_lock
-      {
-        echo "RUST_TOOLCHAIN_NAME=${toolchain_name}"
-        echo "RUST_TOOLCHAIN_CACHEKEY=${toolchain_cachekey}"
-        echo "RUST_TOOLCHAIN_CACHE_HIT=true"
-      } >> "${GITHUB_ENV}"
-      echo "cache-hit=true" >> "${GITHUB_OUTPUT}"
-      echo "Rust toolchain cache hit: ${CACHE_KEY}"
       return 0
     fi
-    rm -rf -- "${LOCAL_RUSTUP_HOME}"
-    mkdir -p "${LOCAL_RUSTUP_HOME}"
-    rm -rf -- "${LOCAL_CARGO_HOME}/bin"
-    mkdir -p "${LOCAL_CARGO_HOME}/bin"
   fi
 
+  if [ -f "${INSTALL_CLAIM_PATH}" ] && ! claim_owned_by_current_job \
+    && ! claim_is_stale; then
+    release_lock
+    wait_for_install_claim
+    return 0
+  fi
+
+  rm -f -- "${INSTALL_CLAIM_PATH}"
+  write_install_claim
   release_lock
-  echo "RUST_TOOLCHAIN_CACHE_HIT=false" >> "${GITHUB_ENV}"
-  echo "cache-hit=false" >> "${GITHUB_OUTPUT}"
-  echo "Rust toolchain cache miss: ${CACHE_KEY}"
+  set_cache_miss
 }
 
 save() {
@@ -245,9 +349,8 @@ save() {
 
   validate_value "${RUST_TOOLCHAIN_NAME}" "Rust toolchain name"
   validate_value "${RUST_TOOLCHAIN_CACHEKEY}" "Rustc cache key"
-  if ! [[ "${CACHE_LOCK_TIMEOUT_SECONDS}" =~ ^[1-9][0-9]*$ ]]; then
-    fail "cache-lock-timeout-seconds must be a positive integer"
-  fi
+  validate_positive_integer "${CACHE_LOCK_TIMEOUT_SECONDS}" "cache-lock-timeout-seconds"
+  validate_positive_integer "${CACHE_INSTALL_LEASE_SECONDS}" "cache-install-lease-seconds"
   if ! command -v flock >/dev/null 2>&1; then
     warn "flock is unavailable; skipping Rust toolchain cache save"
     {
@@ -275,6 +378,7 @@ save() {
   fi
 
   if cache_valid "${BUNDLE_DIR}" "${CACHE_KEY}"; then
+    remove_owned_install_claim
     release_lock
     {
       echo "RUST_TOOLCHAIN_NAME=${RUST_TOOLCHAIN_NAME}"
@@ -282,6 +386,13 @@ save() {
     } >> "${GITHUB_ENV}"
     echo "Rust toolchain cache was populated by another job: ${CACHE_KEY}"
     return 0
+  fi
+
+  if [ -f "${INSTALL_CLAIM_PATH}" ] && ! claim_owned_by_current_job; then
+    fail "Rust toolchain cache installation claim belongs to another job: ${CACHE_KEY}"
+  fi
+  if [ ! -f "${INSTALL_CLAIM_PATH}" ]; then
+    write_install_claim
   fi
 
   local staging_dir="${CACHE_DIR}/.staging.$$"
@@ -315,6 +426,7 @@ save() {
   mv "${staging_dir}/bundle" "${BUNDLE_DIR}"
   rm -rf -- "${staging_dir}"
   trap - EXIT
+  remove_owned_install_claim
   release_lock
   {
     echo "RUST_TOOLCHAIN_NAME=${RUST_TOOLCHAIN_NAME}"
@@ -323,11 +435,29 @@ save() {
   echo "Rust toolchain cache populated: ${CACHE_KEY}"
 }
 
+cleanup() {
+  prepare_paths
+
+  if ! command -v flock >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! mkdir -p "${CACHE_DIR}" 2>/dev/null; then
+    return 0
+  fi
+  if ! acquire_lock "${LOCK_PATH}"; then
+    warn "timed out waiting for Rust toolchain cache cleanup lock: ${CACHE_KEY}"
+    return 0
+  fi
+  remove_owned_install_claim
+  release_lock
+}
+
 : "${RUST_TOOLCHAIN:?toolchain is required}"
 : "${RUST_TARGETS:=}"
 : "${RUST_TARGET:=}"
 : "${RUST_COMPONENTS:=}"
 : "${CACHE_LOCK_TIMEOUT_SECONDS:=1800}"
+: "${CACHE_INSTALL_LEASE_SECONDS:=7200}"
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 : "${GITHUB_ENV:?GITHUB_ENV is required}"
 : "${GITHUB_OUTPUT:?GITHUB_OUTPUT is required}"
@@ -337,5 +467,6 @@ save() {
 case "${1:-}" in
   restore) restore ;;
   save) save ;;
+  cleanup) cleanup ;;
   *) fail "usage: $0 restore|save" ;;
 esac
