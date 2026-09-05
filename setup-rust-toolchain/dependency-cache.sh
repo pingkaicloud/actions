@@ -1,5 +1,21 @@
 #!/usr/bin/env bash
 
+# Set up the job-local Cargo home and the optional Lindera cache on the
+# shared runner NAS volume. Moved here from nas-cache so that
+# setup-rust-toolchain is a one-stop Rust environment action.
+#
+# Layout:
+#   CARGO_HOME (job-local, under RUNNER_TEMP)
+#     bin/                     toolchain shims (restored/installed by the action)
+#     registry/src/            unpacked crate sources, job-local on purpose
+#     registry/cache/  -> NAS  downloaded .crate files (safe to share)
+#     git/db/          -> NAS  cargo git dependency database
+#     .package-cache(-mutate) -> NAS download/mutation lock files
+#
+# registry/src stays job-local: concurrent jobs unpacking the same crate
+# into a shared src directory fail with "File exists" races, while
+# re-unpacking from the shared cache is cheap and needs no network.
+
 set -euo pipefail
 
 fail() {
@@ -14,6 +30,14 @@ validate_absolute_path() {
   if [[ "${value}" != /* ]] || [[ "${value}" == *$'\n'* ]] || [[ "${value}" == *$'\r'* ]]; then
     fail "${label} must be an absolute path without newlines"
   fi
+}
+
+validate_value() {
+  local value="$1"
+  local label="$2"
+
+  [[ "${value}" != *$'\n'* ]] || fail "${label} cannot contain a newline"
+  [[ "${value}" != *$'\r'* ]] || fail "${label} cannot contain a carriage return"
 }
 
 validate_component() {
@@ -124,11 +148,21 @@ ensure_file_link() {
 
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 : "${GITHUB_ENV:?GITHUB_ENV is required}"
-: "${GO_CACHE_KEY:=}"
-: "${NPM_CACHE_KEY:=}"
-: "${PIP_CACHE_KEY:=}"
-: "${PULUMI_CACHE_KEY:=}"
+: "${GITHUB_PATH:?GITHUB_PATH is required}"
+: "${RUNNER_TEMP:?RUNNER_TEMP is required}"
+: "${ENABLE_CARGO_CACHE:=true}"
+: "${CARGO_CACHE_KEY:=}"
+: "${LINDERA_CACHE_KEY:=}"
 
+validate_value "${CARGO_CACHE_KEY}" "cargo cache key"
+validate_value "${LINDERA_CACHE_KEY}" "lindera cache key"
+validate_absolute_path "${RUNNER_TEMP}" "RUNNER_TEMP"
+
+case "${ENABLE_CARGO_CACHE}" in
+  true|1) cargo_cache_enabled=true ;;
+  false|0) cargo_cache_enabled=false ;;
+  *) fail "ENABLE_CARGO_CACHE must be true or false" ;;
+esac
 
 RUNNER_CACHE="${RUNNER_CACHE:-/mnt/dependency-cache}"
 validate_absolute_path "${RUNNER_CACHE}" "RUNNER_CACHE"
@@ -136,47 +170,48 @@ if ! [ -d "${RUNNER_CACHE}" ]; then
   echo "::warning::${RUNNER_CACHE} does not exist; the runner pod may not have the NAS cache volume mounted. Caches will not persist."
 fi
 validate_repository
-# REPO_CACHE can be preset to share or relocate the whole per-repo cache root
-# (e.g. buildx local cache backends); it defaults to the per-repo NAS path.
+# REPO_CACHE can be preset to share or relocate the whole per-repo cache root.
 : "${REPO_CACHE:=${RUNNER_CACHE}/${GITHUB_REPOSITORY}}"
 validate_absolute_path "${REPO_CACHE}" "REPO_CACHE"
 BASE="${REPO_CACHE}"
 
-resolve_cache_dir "go" "${GO_CACHE_KEY}"
-GO_CACHE_DIR="${RESOLVED_CACHE_DIR}"
-mkdir -p "${GO_CACHE_DIR}/pkg/mod" "${GO_CACHE_DIR}/build"
+CARGO_HOME="${RUNNER_TEMP}/cargo-home"
+ensure_directory "${CARGO_HOME}" "job-local Cargo home"
+ensure_directory "${CARGO_HOME}/bin" "job-local Cargo bin directory"
+ensure_directory "${CARGO_HOME}/git" "job-local Cargo git directory"
+ensure_directory "${CARGO_HOME}/registry" "job-local Cargo registry directory"
+ensure_directory "${CARGO_HOME}/registry/src" "job-local Cargo registry sources"
 
-resolve_cache_dir "npm" "${NPM_CACHE_KEY}"
-NPM_CACHE_DIR="${RESOLVED_CACHE_DIR}"
+if [ "${cargo_cache_enabled}" = true ]; then
+  resolve_cache_dir "cargo" "${CARGO_CACHE_KEY}"
+  CARGO_CACHE_DIR="${RESOLVED_CACHE_DIR}"
+  # Reuse the registry subtree created by the previous nas-cache layout so
+  # populated .crate downloads keep working; only cache/ is shared now.
+  ensure_directory "${CARGO_CACHE_DIR}/registry" "Cargo registry cache"
+  ensure_directory "${CARGO_CACHE_DIR}/registry/cache" "Cargo crate download cache"
+  ensure_directory "${CARGO_CACHE_DIR}/git-db" "Cargo git DB cache"
+  ensure_file "${CARGO_CACHE_DIR}/.package-cache" "Cargo download lock"
+  ensure_file "${CARGO_CACHE_DIR}/.package-cache-mutate" "Cargo mutation lock"
 
-resolve_cache_dir "pip" "${PIP_CACHE_KEY}"
-PIP_CACHE_DIR="${RESOLVED_CACHE_DIR}"
-
-resolve_cache_dir "pulumi" "${PULUMI_CACHE_KEY}"
-PULUMI_CACHE_DIR="${RESOLVED_CACHE_DIR}"
-mkdir -p "${PULUMI_CACHE_DIR}/plugins"
-
-# Share only the plugin directory. PULUMI_HOME itself must stay pod-local:
-# concurrent jobs of the same repository log in to different Pulumi backends
-# (e.g. with and without ?profile=...), and a shared credentials.json lets
-# them clobber each other's "current" backend.
-pulumi_plugins="${HOME:-/home/runner}/.pulumi/plugins"
-if [ -L "${pulumi_plugins}" ]; then
-  ln -sfn "${PULUMI_CACHE_DIR}/plugins" "${pulumi_plugins}"
-elif [ -e "${pulumi_plugins}" ]; then
-  echo "::warning::${pulumi_plugins} already exists and is not a symlink; leaving it in place, plugins will not be shared"
-else
-  mkdir -p "${HOME:-/home/runner}/.pulumi"
-  ln -s "${PULUMI_CACHE_DIR}/plugins" "${pulumi_plugins}"
+  ensure_directory_link "${CARGO_HOME}/registry/cache" "${CARGO_CACHE_DIR}/registry/cache" "Cargo crate download cache link"
+  ensure_directory_link "${CARGO_HOME}/git/db" "${CARGO_CACHE_DIR}/git-db" "Cargo git DB link"
+  ensure_file_link "${CARGO_HOME}/.package-cache" "${CARGO_CACHE_DIR}/.package-cache" "Cargo download lock link"
+  ensure_file_link "${CARGO_HOME}/.package-cache-mutate" "${CARGO_CACHE_DIR}/.package-cache-mutate" "Cargo mutation lock link"
 fi
 
-
+if [ -n "${LINDERA_CACHE_KEY}" ]; then
+  resolve_cache_dir "lindera" "${LINDERA_CACHE_KEY}"
+  LINDERA_CACHE_DIR="${RESOLVED_CACHE_DIR}"
+  ensure_directory "${LINDERA_CACHE_DIR}" "Lindera cache"
+  ensure_file "${LINDERA_CACHE_DIR}/.lock" "Lindera cache lock"
+fi
 
 {
-  echo "REPO_CACHE=${BASE}"
-  echo "GOMODCACHE=${GO_CACHE_DIR}/pkg/mod"
-  echo "GOCACHE=${GO_CACHE_DIR}/build"
-  echo "npm_config_cache=${NPM_CACHE_DIR}"
-  echo "PIP_CACHE_DIR=${PIP_CACHE_DIR}"
+  echo "CARGO_HOME=${CARGO_HOME}"
+  if [ -n "${LINDERA_CACHE_KEY}" ]; then
+    echo "LINDERA_CACHE=${LINDERA_CACHE_DIR}"
+    echo "LINDERA_CACHE_LOCK=${LINDERA_CACHE_DIR}/.lock"
+    echo "LINDERA_CACHE_READY=${LINDERA_CACHE_DIR}/.ready"
+  fi
 } >> "${GITHUB_ENV}"
-
+echo "${CARGO_HOME}/bin" >> "${GITHUB_PATH}"
