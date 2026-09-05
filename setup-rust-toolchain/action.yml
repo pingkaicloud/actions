@@ -96,7 +96,7 @@ runs:
     - id: install
       name: Install Rust toolchain
       if: steps.restore.outputs.cache-hit != 'true'
-      uses: dtolnay/rust-toolchain@v1
+      uses: dtolnay/rust-toolchain@master
       with:
         toolchain: ${{ inputs.toolchain }}
         targets: ${{ inputs.targets }}
