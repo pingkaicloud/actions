@@ -82,6 +82,9 @@ chmod +x "${TEST_ROOT}/bin/rustc"
 
 export PATH="${TEST_ROOT}/bin:${PATH}"
 export GITHUB_REPOSITORY=pingkaicloud/cloud-storage-engine
+export GITHUB_RUN_ID=primary-run
+export GITHUB_JOB=primary
+export GITHUB_RUN_ATTEMPT=1
 export RUNNER_OS=Linux
 export RUNNER_ARCH=X64
 export RUNNER_TOOL_CACHE="${TEST_ROOT}/toolcache"
@@ -152,7 +155,7 @@ assert_file "${RUNNER_TEMP}/rust-toolchain-action-ref"
 assert_contains "${RUNNER_TEMP}/rust-toolchain-action-ref" "0123456789abcdef0123456789abcdef01234567"
 claim_file="${RUNNER_TOOL_CACHE}/rust-toolchain/${cache_key}/.installing"
 assert_file "${claim_file}"
-assert_contains "${claim_file}" "owner=${RUNNER_TEMP}"
+assert_contains "${claim_file}" "owner=${GITHUB_RUN_ID}/${GITHUB_JOB}/${GITHUB_RUN_ATTEMPT}"
 mkdir -p "${RUNNER_TEMP}/rustup-home/toolchains/nightly-2026-01-30/bin" "${RUNNER_TEMP}/cargo-home/bin"
 printf 'rustc\n' > "${RUNNER_TEMP}/rustup-home/toolchains/nightly-2026-01-30/bin/rustc"
 cp "${TEST_ROOT}/bin/rustup" "${RUNNER_TEMP}/cargo-home/bin/rustup"
@@ -188,13 +191,17 @@ for candidate in "${RUNNER_TOOL_CACHE}"/rust-toolchain/*/.installing; do
 done
 [ -n "${second_claim_file}" ] || fail "second cache miss did not create an installation claim"
 
-waiter_temp="${TEST_ROOT}/runner-temp-waiter"
-mkdir -p "${waiter_temp}"
+# Separate Pods can expose the same RUNNER_TEMP path. Keep it identical here
+# and vary only the GitHub job identity to exercise the cross-Pod case.
+waiter_temp="${RUNNER_TEMP}"
 : > "${TEST_ROOT}/waiter.env"
 : > "${TEST_ROOT}/waiter.output"
 : > "${TEST_ROOT}/waiter.path"
 (
   RUNNER_TEMP="${waiter_temp}" \
+  GITHUB_RUN_ID=waiter-run \
+  GITHUB_JOB=waiter \
+  GITHUB_RUN_ATTEMPT=1 \
   GITHUB_ENV="${TEST_ROOT}/waiter.env" \
   GITHUB_OUTPUT="${TEST_ROOT}/waiter.output" \
   GITHUB_PATH="${TEST_ROOT}/waiter.path" \

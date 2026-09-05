@@ -278,6 +278,9 @@ prepare_paths() {
   validate_value "${RUST_TARGET}" "target"
   validate_value "${RUST_COMPONENTS}" "components"
   validate_value "${GITHUB_REPOSITORY}" "GITHUB_REPOSITORY"
+  validate_value "${GITHUB_RUN_ID}" "GITHUB_RUN_ID"
+  validate_value "${GITHUB_JOB}" "GITHUB_JOB"
+  validate_value "${GITHUB_RUN_ATTEMPT}" "GITHUB_RUN_ATTEMPT"
   validate_value "${CACHE_LOCK_TIMEOUT_SECONDS}" "cache lock timeout"
   validate_absolute_path "${RUNNER_TEMP}" "RUNNER_TEMP"
 
@@ -289,8 +292,9 @@ prepare_paths() {
   BUNDLE_DIR="${CACHE_DIR}/bundle"
   LOCK_PATH="${CACHE_DIR}.lock"
   INSTALL_CLAIM_PATH="${CACHE_DIR}/${INSTALL_CLAIM_FILE_NAME}"
-  # RUNNER_TEMP is unique for a job and persists across the composite action steps.
-  CACHE_OWNER="${RUNNER_TEMP}"
+  # RUNNER_TEMP is only unique inside each runner Pod. Use GitHub's job identity
+  # so claims remain unique when multiple Pods share the same NAS cache.
+  CACHE_OWNER="${GITHUB_RUN_ID}/${GITHUB_JOB}/${GITHUB_RUN_ATTEMPT}"
   # RUSTUP_HOME is job-local and only ever holds this job's toolchain.
   # CARGO_HOME is prepared by dependency-cache.sh (${RUNNER_TEMP}/cargo-home)
   # and may already contain NAS-backed registry/git links, so never wipe it.
@@ -459,6 +463,9 @@ cleanup() {
 : "${CACHE_LOCK_TIMEOUT_SECONDS:=1800}"
 : "${CACHE_INSTALL_LEASE_SECONDS:=7200}"
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
+: "${GITHUB_RUN_ID:?GITHUB_RUN_ID is required}"
+: "${GITHUB_JOB:?GITHUB_JOB is required}"
+: "${GITHUB_RUN_ATTEMPT:?GITHUB_RUN_ATTEMPT is required}"
 : "${GITHUB_ENV:?GITHUB_ENV is required}"
 : "${GITHUB_OUTPUT:?GITHUB_OUTPUT is required}"
 : "${GITHUB_PATH:?GITHUB_PATH is required}"
