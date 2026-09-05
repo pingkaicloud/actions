@@ -23,23 +23,6 @@ inputs:
       Optional Pulumi cache key (~/.pulumi/plugins symlink, holds downloaded plugins).
       When omitted, uses the repository's fixed Pulumi cache.
     default: ""
-  enable-cargo-cache:
-    description: >
-      Enable Cargo registry and git DB caching. Cargo's cache lock files are
-      shared with the cache; checkout, config, and installed binaries remain job-local.
-    default: "false"
-  cargo-cache-key:
-    description: >
-      Optional Cargo cache key. When omitted, uses the repository's fixed Cargo cache.
-    default: ""
-  enable-lindera-cache:
-    description: >
-      Enable the Lindera dictionary cache on the runner NAS.
-    default: "false"
-  lindera-cache-key:
-    description: >
-      Optional Lindera cache key. Include the dictionary version when changing it.
-    default: ""
 
 runs:
   using: composite
@@ -52,10 +35,6 @@ runs:
         NPM_CACHE_KEY: ${{ inputs.npm-cache-key }}
         PIP_CACHE_KEY: ${{ inputs.pip-cache-key }}
         PULUMI_CACHE_KEY: ${{ inputs.pulumi-cache-key }}
-        ENABLE_CARGO_CACHE: ${{ inputs.enable-cargo-cache }}
-        CARGO_CACHE_KEY: ${{ inputs.cargo-cache-key }}
-        ENABLE_LINDERA_CACHE: ${{ inputs.enable-lindera-cache }}
-        LINDERA_CACHE_KEY: ${{ inputs.lindera-cache-key }}
       run: |
         set -euo pipefail
         bash "${ACTION_PATH}/resolve-cache-keys.sh"

@@ -133,11 +133,13 @@ prepare_paths() {
   CACHE_DIR="${CACHE_ROOT}/rust-toolchain/${CACHE_KEY}"
   BUNDLE_DIR="${CACHE_DIR}/bundle"
   LOCK_PATH="${CACHE_DIR}.lock"
-  LOCAL_ROOT="${RUNNER_TEMP}/rust-toolchain/${CACHE_KEY}"
-  LOCAL_RUSTUP_HOME="${LOCAL_ROOT}/rustup"
-  LOCAL_CARGO_HOME="${LOCAL_ROOT}/cargo"
+  # RUSTUP_HOME is job-local and only ever holds this job's toolchain.
+  # CARGO_HOME is prepared by dependency-cache.sh (${RUNNER_TEMP}/cargo-home)
+  # and may already contain NAS-backed registry/git links, so never wipe it.
+  LOCAL_RUSTUP_HOME="${RUNNER_TEMP}/rustup-home"
+  LOCAL_CARGO_HOME="${RUNNER_TEMP}/cargo-home"
 
-  mkdir -p "${LOCAL_ROOT}"
+  mkdir -p "${LOCAL_RUSTUP_HOME}"
   write_job_environment
 }
 
@@ -166,10 +168,12 @@ restore() {
   fi
 
   if cache_valid "${BUNDLE_DIR}" "${CACHE_KEY}"; then
-    rm -rf -- "${LOCAL_ROOT}"
-    mkdir -p "${LOCAL_ROOT}"
-    cp -a "${BUNDLE_DIR}/rustup" "${LOCAL_ROOT}/rustup"
-    cp -a "${BUNDLE_DIR}/cargo" "${LOCAL_ROOT}/cargo"
+    rm -rf -- "${LOCAL_RUSTUP_HOME}"
+    mkdir -p "${LOCAL_RUSTUP_HOME}"
+    rm -rf -- "${LOCAL_CARGO_HOME}/bin"
+    mkdir -p "${LOCAL_CARGO_HOME}/bin"
+    cp -a "${BUNDLE_DIR}/rustup" "${LOCAL_RUSTUP_HOME}/"
+    cp -a "${BUNDLE_DIR}/cargo/bin/." "${LOCAL_CARGO_HOME}/bin/"
     toolchain_name="$(manifest_value "${BUNDLE_DIR}/manifest" toolchain_name)"
     toolchain_cachekey="$(manifest_value "${BUNDLE_DIR}/manifest" rustc_cachekey)"
     if RUSTUP_HOME="${LOCAL_RUSTUP_HOME}" \
@@ -186,8 +190,10 @@ restore() {
       echo "Rust toolchain cache hit: ${CACHE_KEY}"
       return 0
     fi
-    rm -rf -- "${LOCAL_ROOT}"
-    mkdir -p "${LOCAL_ROOT}"
+    rm -rf -- "${LOCAL_RUSTUP_HOME}"
+    mkdir -p "${LOCAL_RUSTUP_HOME}"
+    rm -rf -- "${LOCAL_CARGO_HOME}/bin"
+    mkdir -p "${LOCAL_CARGO_HOME}/bin"
   fi
 
   release_lock

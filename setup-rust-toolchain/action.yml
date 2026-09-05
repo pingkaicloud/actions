@@ -1,7 +1,10 @@
 name: setup-rust-toolchain
 description: >
-  Restore a parameter-isolated Rust toolchain from the shared runner tool cache,
-  or install it with dtolnay/rust-toolchain and populate the cache.
+  One-stop Rust environment setup: restore a parameter-isolated Rust toolchain
+  from the shared runner tool cache (or install it with dtolnay/rust-toolchain
+  and populate the cache), and wire the job-local Cargo home to the per-repo
+  NAS dependency cache (registry downloads and git DB; unpacked sources stay
+  job-local) plus the optional Lindera dictionary cache.
 
 inputs:
   toolchain:
@@ -17,6 +20,25 @@ inputs:
     default: ""
   components:
     description: Comma-separated components passed to dtolnay/rust-toolchain.
+    required: false
+    default: ""
+  enable-cargo-cache:
+    description: >
+      Link the job-local Cargo home to the per-repo NAS dependency cache.
+      CARGO_HOME is always job-local under RUNNER_TEMP; this only controls
+      the NAS-backed registry download and git DB links.
+    required: false
+    default: "true"
+  cargo-cache-key:
+    description: >
+      Optional Cargo cache key. When omitted, uses the repository's fixed
+      Cargo cache.
+    required: false
+    default: ""
+  lindera-cache-key:
+    description: >
+      Lindera dictionary cache key on the runner NAS. Include the dictionary
+      version when changing it. Empty disables the Lindera cache.
     required: false
     default: ""
   cache-lock-timeout-seconds:
@@ -38,6 +60,15 @@ outputs:
 runs:
   using: composite
   steps:
+    - id: deps
+      name: Setup Cargo and Lindera caches
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        ENABLE_CARGO_CACHE: ${{ inputs.enable-cargo-cache }}
+        CARGO_CACHE_KEY: ${{ inputs.cargo-cache-key }}
+        LINDERA_CACHE_KEY: ${{ inputs.lindera-cache-key }}
+      run: bash "${ACTION_PATH}/dependency-cache.sh"
     - id: restore
       name: Restore Rust toolchain from tool cache
       shell: bash
