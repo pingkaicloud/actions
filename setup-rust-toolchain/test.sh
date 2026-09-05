@@ -31,14 +31,12 @@ assert_contains() {
 }
 
 mkdir -p "${TEST_ROOT}/bin" "${TEST_ROOT}/toolcache" "${TEST_ROOT}/runner-temp"
-if ! command -v flock >/dev/null 2>&1; then
-  # macOS does not ship util-linux flock; use a no-op shim for this single-process test.
-  cat > "${TEST_ROOT}/bin/flock" <<'EOF'
-#!/usr/bin/env bash
-exit 0
-EOF
-  chmod +x "${TEST_ROOT}/bin/flock"
-fi
+! grep -Fq 'flock' "${SCRIPT_DIR}/toolchain-cache.sh" \
+  || fail "Rust toolchain cache must not depend on flock"
+! grep -Fq '.installing.tmp.$$' "${SCRIPT_DIR}/toolchain-cache.sh" \
+  || fail "installation claim temporary path still depends on PID only"
+! grep -Fq '.staging.$$' "${SCRIPT_DIR}/toolchain-cache.sh" \
+  || fail "cache staging path still depends on PID only"
 cat > "${TEST_ROOT}/bin/rustup" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -225,6 +223,52 @@ wait "${waiter_pid}"
 grep -Fq 'cache-hit=true' "${TEST_ROOT}/waiter.output" \
   || fail "concurrent restore did not reuse the populated cache"
 assert_not_exists "${second_claim_file}"
+
+# A live lock must time out instead of allowing a second writer to enter.
+export RUST_COMPONENTS=lock-timeout
+: > "${GITHUB_OUTPUT}"
+timeout_lock_cache_dir=""
+bash "${SCRIPT_DIR}/toolchain-cache.sh" restore
+for candidate in "${RUNNER_TOOL_CACHE}"/rust-toolchain/*; do
+  if [ -f "${candidate}/.installing" ]; then
+    timeout_lock_cache_dir="${candidate}"
+    break
+  fi
+done
+[ -n "${timeout_lock_cache_dir}" ] || fail "lock-timeout test did not create an installation claim"
+rm -f "${timeout_lock_cache_dir}/.installing"
+timeout_lock_path="${timeout_lock_cache_dir}.lock.d"
+mkdir "${timeout_lock_path}"
+touch "${timeout_lock_path}/heartbeat.holder"
+if CACHE_LOCK_TIMEOUT_SECONDS=1 bash "${SCRIPT_DIR}/toolchain-cache.sh" restore \
+  >/dev/null 2>&1; then
+  fail "held toolchain cache lock unexpectedly succeeded"
+fi
+rm -rf "${timeout_lock_path}" "${timeout_lock_cache_dir}"
+
+# An abandoned lock can be reclaimed without deleting a newly acquired lock.
+: > "${GITHUB_OUTPUT}"
+bash "${SCRIPT_DIR}/toolchain-cache.sh" restore
+stale_cache_dir=""
+for candidate in "${RUNNER_TOOL_CACHE}"/rust-toolchain/*; do
+  if [ -f "${candidate}/.installing" ]; then
+    stale_cache_dir="${candidate}"
+    break
+  fi
+done
+[ -n "${stale_cache_dir}" ] || fail "stale-lock test did not create an installation claim"
+rm -f "${stale_cache_dir}/.installing"
+stale_lock_path="${stale_cache_dir}.lock.d"
+mkdir "${stale_lock_path}"
+touch "${stale_lock_path}/heartbeat.stale"
+sleep 2
+: > "${GITHUB_OUTPUT}"
+CACHE_LOCK_STALE_SECONDS=1 bash "${SCRIPT_DIR}/toolchain-cache.sh" restore
+grep -Fq 'cache-hit=false' "${GITHUB_OUTPUT}" \
+  || fail "stale toolchain cache lock was not reclaimed"
+assert_file "${stale_cache_dir}/.installing"
+bash "${SCRIPT_DIR}/toolchain-cache.sh" cleanup
+assert_not_exists "${stale_lock_path}"
 
 # A failed install must clean up its claim so a later job can retry immediately.
 export RUST_COMPONENTS=clippy
