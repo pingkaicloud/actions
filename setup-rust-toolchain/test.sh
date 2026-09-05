@@ -54,6 +54,21 @@ fi
 exit 2
 EOF
 chmod +x "${TEST_ROOT}/bin/rustup"
+cat > "${TEST_ROOT}/bin/git" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+case " $* " in
+  *" ls-remote "*)
+    printf '%s\trefs/heads/master\n' '0123456789abcdef0123456789abcdef01234567'
+    ;;
+  *)
+    echo "unexpected git invocation: $*" >&2
+    exit 1
+    ;;
+esac
+EOF
+chmod +x "${TEST_ROOT}/bin/git"
 cat > "${TEST_ROOT}/bin/rustc" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -133,6 +148,8 @@ for cache_dir in "${RUNNER_TOOL_CACHE}"/rust-toolchain/*; do
   fi
 done
 [ -n "${cache_key}" ] || fail "cache directory was not created"
+assert_file "${RUNNER_TEMP}/rust-toolchain-action-ref"
+assert_contains "${RUNNER_TEMP}/rust-toolchain-action-ref" "0123456789abcdef0123456789abcdef01234567"
 mkdir -p "${RUNNER_TEMP}/rustup-home/toolchains/nightly-2026-01-30/bin" "${RUNNER_TEMP}/cargo-home/bin"
 printf 'rustc\n' > "${RUNNER_TEMP}/rustup-home/toolchains/nightly-2026-01-30/bin/rustc"
 cp "${TEST_ROOT}/bin/rustup" "${RUNNER_TEMP}/cargo-home/bin/rustup"

@@ -3,7 +3,10 @@
 set -euo pipefail
 
 readonly CACHE_SCHEMA="rust-toolchain-v1"
-readonly ACTION_REF="dtolnay/rust-toolchain@master"
+readonly ACTION_REPOSITORY="dtolnay/rust-toolchain"
+readonly ACTION_BRANCH="master"
+readonly ACTION_REF_FILE_NAME="rust-toolchain-action-ref"
+ACTION_REF=""
 
 fail() {
   echo "::error::$*" >&2
@@ -28,6 +31,38 @@ validate_absolute_path() {
 
   [[ "${value}" = /* ]] || fail "${label} must be an absolute path"
   validate_value "${value}" "${label}"
+}
+
+resolve_action_ref() {
+  local ref_file="${RUNNER_TEMP}/${ACTION_REF_FILE_NAME}"
+  local action_sha=""
+
+  if [ -s "${ref_file}" ]; then
+    action_sha="$(<"${ref_file}")"
+  fi
+
+  if ! [[ "${action_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+    if ! action_sha="$(
+      GIT_TERMINAL_PROMPT=0 git \
+        -c http.connectTimeout=10 \
+        -c http.lowSpeedLimit=1000 \
+        -c http.lowSpeedTime=10 \
+        ls-remote --heads --exit-code \
+        "https://github.com/${ACTION_REPOSITORY}.git" \
+        "refs/heads/${ACTION_BRANCH}" \
+        | awk -v ref="refs/heads/${ACTION_BRANCH}" '$2 == ref { print $1; exit }'
+    )"; then
+      fail "failed to resolve ${ACTION_REPOSITORY}@${ACTION_BRANCH}"
+    fi
+    if ! [[ "${action_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+      fail "invalid resolved SHA for ${ACTION_REPOSITORY}@${ACTION_BRANCH}"
+    fi
+    local temp_ref_file="${ref_file}.$$"
+    printf '%s\n' "${action_sha}" > "${temp_ref_file}"
+    mv -f -- "${temp_ref_file}" "${ref_file}"
+  fi
+
+  printf '%s@%s\n' "${ACTION_REPOSITORY}" "${action_sha}"
 }
 
 hash_inputs() {
@@ -127,6 +162,7 @@ prepare_paths() {
   validate_value "${CACHE_LOCK_TIMEOUT_SECONDS}" "cache lock timeout"
   validate_absolute_path "${RUNNER_TEMP}" "RUNNER_TEMP"
 
+  ACTION_REF="$(resolve_action_ref)"
   CACHE_KEY="$(hash_inputs)"
   CACHE_ROOT="${RUNNER_TOOL_CACHE:-/opt/hostedtoolcache}"
   validate_absolute_path "${CACHE_ROOT}" "RUNNER_TOOL_CACHE"
