@@ -170,6 +170,8 @@ bash "${SCRIPT_DIR}/toolchain-cache.sh" restore
 grep -Fq 'cache-hit=true' "${GITHUB_OUTPUT}" || fail "warm restore was not a hit"
 grep -Fq 'RUST_TOOLCHAIN_NAME=nightly-2026-01-30' "${GITHUB_ENV}" || fail "toolchain name was not exported"
 assert_file "${RUNNER_TEMP}/cargo-home/bin/rustup"
+assert_file "${RUNNER_TEMP}/rustup-home/toolchains/nightly-2026-01-30/bin/rustc"
+assert_not_exists "${RUNNER_TEMP}/rustup-home/rustup"
 [ -L "${RUNNER_TEMP}/cargo-home/registry/cache" ] || fail "registry/cache link lost after restore"
 [ -L "${RUNNER_TEMP}/cargo-home/git/db" ] || fail "git/db link lost after restore"
 assert_not_exists "${cargo_cache_dir}/registry/src"

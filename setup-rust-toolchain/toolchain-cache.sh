@@ -295,7 +295,7 @@ restore_bundle() {
   mkdir -p "${LOCAL_RUSTUP_HOME}"
   rm -rf -- "${LOCAL_CARGO_HOME}/bin"
   mkdir -p "${LOCAL_CARGO_HOME}/bin"
-  cp -a "${BUNDLE_DIR}/rustup" "${LOCAL_RUSTUP_HOME}/"
+  cp -a "${BUNDLE_DIR}/rustup/." "${LOCAL_RUSTUP_HOME}/"
   cp -a "${BUNDLE_DIR}/cargo/bin/." "${LOCAL_CARGO_HOME}/bin/"
   toolchain_name="$(manifest_value "${BUNDLE_DIR}/manifest" toolchain_name)"
   toolchain_cachekey="$(manifest_value "${BUNDLE_DIR}/manifest" rustc_cachekey)"
