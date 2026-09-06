@@ -48,9 +48,9 @@ inputs:
     required: false
     default: "aliyun"
   cache-lock-timeout-seconds:
-    description: Maximum time to wait for a concurrent toolchain cache writer or installer.
+    description: Maximum time to wait for a concurrent toolchain cache writer or installer. Keep this at least as long as the installation lease.
     required: false
-    default: "1800"
+    default: "7200"
   cache-install-lease-seconds:
     description: Time after which an abandoned toolchain installation claim can be reclaimed.
     required: false

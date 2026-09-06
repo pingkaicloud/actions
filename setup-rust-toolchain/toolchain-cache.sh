@@ -319,14 +319,17 @@ restore_bundle() {
 }
 
 wait_for_install_claim() {
-  local deadline now
+  local deadline now wait_timeout_seconds
 
-  deadline=$(( $(date +%s) + CACHE_LOCK_TIMEOUT_SECONDS ))
+  # A waiter must not give up before the claim can become reclaimable. This
+  # also keeps callers with an old, shorter timeout from failing all together.
+  wait_timeout_seconds="${CACHE_LOCK_TIMEOUT_SECONDS}"
+  if (( CACHE_INSTALL_LEASE_SECONDS > wait_timeout_seconds )); then
+    wait_timeout_seconds="${CACHE_INSTALL_LEASE_SECONDS}"
+    echo "::warning::extending Rust toolchain claim wait timeout to ${wait_timeout_seconds}s to cover the installation lease" >&2
+  fi
+  deadline=$(( $(date +%s) + wait_timeout_seconds ))
   while true; do
-    now="$(date +%s)"
-    if (( now >= deadline )); then
-      fail "timed out waiting for Rust toolchain installation claim: ${CACHE_KEY}"
-    fi
     sleep 5
 
     if ! acquire_lock; then
@@ -346,6 +349,11 @@ wait_for_install_claim() {
       return 0
     fi
     release_lock
+
+    now="$(date +%s)"
+    if (( now >= deadline )); then
+      fail "timed out waiting for Rust toolchain installation claim: ${CACHE_KEY}"
+    fi
   done
 }
 
@@ -527,7 +535,7 @@ cleanup() {
 : "${RUST_TARGETS:=}"
 : "${RUST_TARGET:=}"
 : "${RUST_COMPONENTS:=}"
-: "${CACHE_LOCK_TIMEOUT_SECONDS:=1800}"
+: "${CACHE_LOCK_TIMEOUT_SECONDS:=7200}"
 : "${CACHE_INSTALL_LEASE_SECONDS:=7200}"
 : "${CACHE_LOCK_HEARTBEAT_SECONDS:=30}"
 : "${CACHE_LOCK_STALE_SECONDS:=300}"
