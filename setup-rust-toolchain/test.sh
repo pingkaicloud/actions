@@ -287,6 +287,45 @@ done
 bash "${SCRIPT_DIR}/toolchain-cache.sh" cleanup
 assert_not_exists "${failed_claim_file}"
 
+# A waiter must be able to reclaim an abandoned claim after its lease expires,
+# even when the configured wait timeout is shorter than that lease.
+export RUST_COMPONENTS=stale-wait
+: > "${GITHUB_OUTPUT}"
+bash "${SCRIPT_DIR}/toolchain-cache.sh" restore
+stale_wait_claim_file=""
+for candidate in "${RUNNER_TOOL_CACHE}"/rust-toolchain/*/.installing; do
+  if [ -f "${candidate}" ]; then
+    stale_wait_claim_file="${candidate}"
+    break
+  fi
+done
+[ -n "${stale_wait_claim_file}" ] || fail "stale-wait test did not create an installation claim"
+
+printf 'owner=abandoned-run/stale-wait/1\nstarted_at=%s\n' "$(date +%s)" > "${stale_wait_claim_file}"
+: > "${TEST_ROOT}/waiter.env"
+: > "${TEST_ROOT}/waiter.output"
+: > "${TEST_ROOT}/waiter.path"
+(
+  RUNNER_TEMP="${RUNNER_TEMP}" \
+  GITHUB_RUN_ID=waiter-run \
+  GITHUB_JOB=stale-waiter \
+  GITHUB_RUN_ATTEMPT=1 \
+  GITHUB_ENV="${TEST_ROOT}/waiter.env" \
+  GITHUB_OUTPUT="${TEST_ROOT}/waiter.output" \
+  GITHUB_PATH="${TEST_ROOT}/waiter.path" \
+  CACHE_LOCK_TIMEOUT_SECONDS=2 \
+  CACHE_INSTALL_LEASE_SECONDS=1 \
+    bash "${SCRIPT_DIR}/toolchain-cache.sh" restore
+) &
+stale_waiter_pid=$!
+wait "${stale_waiter_pid}"
+grep -Fq 'cache-hit=false' "${TEST_ROOT}/waiter.output" \
+  || fail "waiter did not reclaim the expired installation claim"
+assert_contains "${stale_wait_claim_file}" "owner=waiter-run/stale-waiter/1"
+GITHUB_RUN_ID=waiter-run GITHUB_JOB=stale-waiter \
+  bash "${SCRIPT_DIR}/toolchain-cache.sh" cleanup
+assert_not_exists "${stale_wait_claim_file}"
+
 # A disabled Cargo cache still exports a job-local CARGO_HOME, without links.
 fresh_temp="${TEST_ROOT}/runner-temp-nolinks"
 mkdir -p "${fresh_temp}"
