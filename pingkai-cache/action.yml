@@ -1,0 +1,89 @@
+name: pingkai-cache
+description: >
+  OSS-backed cache for the CN self-hosted runner pools, wrapping the pinned
+  runs-on/cache fork with actions/cache path/key/restore-keys semantics.
+  Credentials are supplied as inputs (pass the org-level GitHub secrets);
+  the bucket and endpoint come from PINGKAI_CACHE_* environment variables
+  (org-level variables or runner-level injection). Objects are laid out as
+  cache/<repo>/<version>/<key>; per-repo isolation and prefix-matched
+  restore keys are built in.
+
+inputs:
+  path:
+    description: >
+      Path(s) to cache and restore, newline-delimited for multiple paths
+      (same semantics as actions/cache).
+    required: true
+  key:
+    description: >
+      Primary cache key used for restore and save (same semantics as
+      actions/cache).
+    required: true
+  restore-keys:
+    description: >
+      Ordered prefix-matched keys used for restoration when the primary key
+      misses (same semantics as actions/cache).
+    default: ""
+  access-key-id:
+    description: >
+      OSS access key id. Pass the org-level secret
+      secrets.PINGKAI_CACHE_ACCESS_KEY_ID. Credentials must never be
+      provided via environment variables.
+    required: true
+  secret-access-key:
+    description: >
+      OSS secret access key. Pass the org-level secret
+      secrets.PINGKAI_CACHE_SECRET_ACCESS_KEY.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Wire up the OSS cache backend
+      shell: bash
+      env:
+        OSS_ACCESS_KEY_ID: ${{ inputs.access-key-id }}
+        OSS_SECRET_ACCESS_KEY: ${{ inputs.secret-access-key }}
+      run: |
+        set -euo pipefail
+
+        missing=
+        for var in PINGKAI_CACHE_BUCKET PINGKAI_CACHE_ENDPOINT; do
+          if [ -z "${!var:-}" ]; then
+            missing="${missing} ${var}"
+          fi
+        done
+        if [ -n "${missing}" ]; then
+          echo "::error::Missing required env:${missing}. Provide PINGKAI_CACHE_* via org-level variables mapped in the workflow env block, or via runner-level injection. See pingkai-cache/README.md."
+          exit 1
+        fi
+
+        if [ -z "${OSS_ACCESS_KEY_ID:-}" ] || [ -z "${OSS_SECRET_ACCESS_KEY:-}" ]; then
+          echo "::error::access-key-id and secret-access-key inputs are required. Pass the org-level secrets PINGKAI_CACHE_ACCESS_KEY_ID / PINGKAI_CACHE_SECRET_ACCESS_KEY in the with block."
+          exit 1
+        fi
+
+        if [ -n "${RUNS_ON_RUNNER_NAME:-}" ]; then
+          echo "::warning::RUNS_ON_RUNNER_NAME is set; runs-on/cache will drop static AWS credentials in favor of the instance profile."
+        fi
+
+        # runs-on/cache reads standard AWS credentials plus its RUNS_ON_S3_*
+        # knobs from the process environment. Writing them to GITHUB_ENV makes
+        # them visible to the nested action step and everything later in the job.
+        {
+          echo "AWS_ACCESS_KEY_ID=${OSS_ACCESS_KEY_ID}"
+          echo "AWS_SECRET_ACCESS_KEY=${OSS_SECRET_ACCESS_KEY}"
+          echo "AWS_REGION=${PINGKAI_CACHE_REGION:-cn-shanghai}"
+          echo "RUNS_ON_S3_BUCKET_CACHE=${PINGKAI_CACHE_BUCKET}"
+          echo "RUNS_ON_S3_BUCKET_ENDPOINT=${PINGKAI_CACHE_ENDPOINT}"
+          echo "RUNS_ON_S3_FORCE_PATH_STYLE=${PINGKAI_CACHE_PATH_STYLE:-false}"
+        } >> "$GITHUB_ENV"
+
+        echo "OSS cache backend: bucket=${PINGKAI_CACHE_BUCKET} endpoint=${PINGKAI_CACHE_ENDPOINT} region=${PINGKAI_CACHE_REGION:-cn-shanghai} path-style=${PINGKAI_CACHE_PATH_STYLE:-false}"
+
+    - name: Restore and save cache (runs-on/cache, pinned)
+      uses: runs-on/cache@3c223729b4fda74ee12f4976048dd69b420fdd26 # v5
+      with:
+        path: ${{ inputs.path }}
+        key: ${{ inputs.key }}
+        restore-keys: ${{ inputs.restore-keys }}
