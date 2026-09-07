@@ -404,4 +404,24 @@ if CARGO_HOME="${cargo_home}" GITHUB_ENV="${TEST_ROOT}/badmirror.env" CRATES_MIR
   fail "unsupported crates-mirror was accepted"
 fi
 
+
+# Stale toolchain bundles are pruned after a successful save; the current
+# bundle and recently used ones survive, and a lock-held candidate is kept.
+gc_root="${RUNNER_TOOL_CACHE}/rust-toolchain"
+mkdir -p "${gc_root}/stalehash/bundle" "${gc_root}/recentshash/bundle" "${gc_root}/lockedhash/bundle"
+printf 'complete\n' > "${gc_root}/stalehash/bundle/.complete"
+printf 'complete\n' > "${gc_root}/recentshash/bundle/.complete"
+printf 'complete\n' > "${gc_root}/lockedhash/bundle/.complete"
+touch -t 202001010000 "${gc_root}/stalehash" "${gc_root}/stalehash/bundle"
+mkdir -- "${gc_root}/lockedhash.lock.d" 2>/dev/null || true
+export RUST_COMPONENTS="clippy,rustfmt"
+: > "${GITHUB_OUTPUT}"
+bash "${SCRIPT_DIR}/toolchain-cache.sh" restore
+[ ! -e "${gc_root}/stalehash" ] || fail "stale toolchain bundle was not pruned"
+[ -e "${gc_root}/recentshash" ] || fail "recent toolchain bundle was pruned"
+[ -e "${gc_root}/lockedhash" ] || fail "lock-held toolchain bundle was pruned"
+[ "$(stat -c %Y "${gc_root}/${cache_key}" 2>/dev/null || stat -f %m "${gc_root}/${cache_key}")" -gt 1577836800 ] \
+  || fail "restored toolchain bundle access time was not refreshed"
+rmdir -- "${gc_root}/lockedhash.lock.d" 2>/dev/null || true
+
 echo "PASS: setup-rust-toolchain"
