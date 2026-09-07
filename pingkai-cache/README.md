@@ -111,6 +111,13 @@ Credentials and backend parameters are deliberately split:
   minutes, unlike zero-copy NAS mounts. Prefer narrow `path` sets.
 - `RUNS_ON_RUNNER_NAME` must stay unset on our runners: the backend drops
   static AWS credentials in favor of an instance profile when it is set.
+- Endpoint canonical form is `https://oss-<region>[-internal].aliyuncs.com`
+  **without** the bucket in the hostname (virtual-hosted addressing adds it).
+  The wire-up step auto-normalizes common mistakes: it prepends `https://`
+  when the scheme is missing and strips a leading `<bucket>.` from the
+  hostname. Keep the org variable canonical anyway — the AWS SDK fails with
+  `Invalid URL` on scheme-less endpoints and the backend swallows restore
+  errors into a silent cache miss.
 
 ## Pin
 
