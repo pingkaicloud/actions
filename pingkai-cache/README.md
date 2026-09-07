@@ -51,6 +51,10 @@ env:
 Save happens in the action's post step (same as `actions/cache`); a restore
 miss does not fail the job.
 
+The action exposes `cache-hit`, matching `actions/cache`: it is `true` only
+when the primary `key` was restored exactly. Credentials are scoped to the
+cache action and are not exported to later job steps.
+
 ## Configuration
 
 Credentials and backend parameters are deliberately split:
