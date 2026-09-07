@@ -121,16 +121,30 @@ runs:
         # backend once here: deterministic config errors (bad credentials,
         # missing bucket, denied policy) fail the job immediately; transient
         # issues stay warnings to keep the cache best-effort.
-        if command -v node >/dev/null 2>&1; then
+        node_bin="$(command -v node || true)"
+        if [ -z "${node_bin}" ]; then
+          # The runner image keeps its Node runtimes under <runner-root>/externals,
+          # not on PATH for shell steps; RUNNER_TEMP is <runner-root>/_work/_temp.
+          runner_root="${RUNNER_TEMP:-/home/runner}"
+          runner_root="${runner_root%/_work/_temp}"
+          for cand in "${runner_root}/externals/node"*/bin/node; do
+            if [ -x "${cand}" ]; then
+              node_bin="${cand}"
+              break
+            fi
+          done
+        fi
+        if [ -n "${node_bin}" ]; then
+          echo "cache backend preflight via ${node_bin}"
           PINGKAI_CACHE_CHECK_ENDPOINT="${endpoint}" \
           PINGKAI_CACHE_BUCKET="${bucket}" \
           PINGKAI_CACHE_REGION="${region}" \
           PINGKAI_CACHE_PATH_STYLE="${path_style}" \
           AWS_ACCESS_KEY_ID="${OSS_ACCESS_KEY_ID}" \
           AWS_SECRET_ACCESS_KEY="${OSS_SECRET_ACCESS_KEY}" \
-          node "${ACTION_PATH}/check-backend.mjs"
+          "${node_bin}" "${ACTION_PATH}/check-backend.mjs"
         else
-          echo "::warning::node not available on the runner; skipping the cache backend preflight"
+          echo "::warning::node not found on PATH or under the runner's externals; skipping the cache backend preflight"
         fi
 
     - name: Restore and save cache (runs-on/cache, pinned)
