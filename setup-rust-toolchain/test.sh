@@ -30,6 +30,17 @@ assert_contains() {
   grep -Fq "$2" "$1" || fail "expected $1 to contain: $2"
 }
 
+assert_action_contains() {
+  assert_contains "${SCRIPT_DIR}/action.yml" "$1"
+}
+
+assert_action_contains 'rustup-dist-server:'
+assert_action_contains 'default: "https://rsproxy.cn"'
+assert_action_contains 'rustup-update-root:'
+assert_action_contains 'default: "https://rsproxy.cn/rustup"'
+assert_action_contains 'RUSTUP_DIST_SERVER: ${{ steps.rustup-config.outputs.dist_server }}'
+assert_action_contains 'RUSTUP_UPDATE_ROOT: ${{ steps.rustup-config.outputs.update_root }}'
+
 mkdir -p "${TEST_ROOT}/bin" "${TEST_ROOT}/toolcache" "${TEST_ROOT}/runner-temp"
 ! grep -Fq 'flock' "${SCRIPT_DIR}/toolchain-cache.sh" \
   || fail "Rust toolchain cache must not depend on flock"
@@ -105,6 +116,32 @@ export LINDERA_CACHE_KEY=lindera-0.43.1-test
 : > "${GITHUB_PATH}"
 
 mkdir -p "${RUNNER_CACHE}"
+
+# Rustup defaults are centralized in the action, while an existing job-level
+# setting remains an explicit compatibility override.
+: > "${TEST_ROOT}/rustup-default.env"
+: > "${TEST_ROOT}/rustup-default.output"
+GITHUB_ENV="${TEST_ROOT}/rustup-default.env" \
+GITHUB_OUTPUT="${TEST_ROOT}/rustup-default.output" \
+RUSTUP_DIST_SERVER_DEFAULT=https://rsproxy.cn \
+RUSTUP_UPDATE_ROOT_DEFAULT=https://rsproxy.cn/rustup \
+  bash "${SCRIPT_DIR}/rustup-config.sh"
+assert_contains "${TEST_ROOT}/rustup-default.env" "RUSTUP_DIST_SERVER=https://rsproxy.cn"
+assert_contains "${TEST_ROOT}/rustup-default.env" "RUSTUP_UPDATE_ROOT=https://rsproxy.cn/rustup"
+assert_contains "${TEST_ROOT}/rustup-default.output" "dist_server=https://rsproxy.cn"
+assert_contains "${TEST_ROOT}/rustup-default.output" "update_root=https://rsproxy.cn/rustup"
+
+: > "${TEST_ROOT}/rustup-override.env"
+: > "${TEST_ROOT}/rustup-override.output"
+GITHUB_ENV="${TEST_ROOT}/rustup-override.env" \
+GITHUB_OUTPUT="${TEST_ROOT}/rustup-override.output" \
+RUSTUP_DIST_SERVER=https://mirror.example/dist \
+RUSTUP_UPDATE_ROOT=https://mirror.example/root \
+RUSTUP_DIST_SERVER_DEFAULT=https://rsproxy.cn \
+RUSTUP_UPDATE_ROOT_DEFAULT=https://rsproxy.cn/rustup \
+  bash "${SCRIPT_DIR}/rustup-config.sh"
+assert_contains "${TEST_ROOT}/rustup-override.env" "RUSTUP_DIST_SERVER=https://mirror.example/dist"
+assert_contains "${TEST_ROOT}/rustup-override.env" "RUSTUP_UPDATE_ROOT=https://mirror.example/root"
 
 # Dependency caches: job-local Cargo home with NAS-backed download/git links
 # and unpacked sources kept local; Lindera dirs are created and exported.
