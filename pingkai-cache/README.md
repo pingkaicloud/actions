@@ -101,6 +101,14 @@ Credentials and backend parameters are deliberately split:
 
 ## Behavior notes
 
+- **Backend preflight**: before handing over to runs-on/cache, the wire-up
+  step probes the backend with one signed `ListObjectsV2` (max-keys=1). A
+  deterministic configuration error — unknown access key, rejected signature,
+  missing bucket, denied ListObjects policy — fails the job in seconds with
+  `::error::` instead of wasting a full cold build. Transient issues
+  (unreachable endpoint, HTTP 5xx, timeouts) stay `::warning::` and continue,
+  preserving the best-effort cache semantics. This exists because
+  runs-on/cache swallows backend errors into a silent cache miss.
 - Object layout is `cache/<repo>/<version>/<key>`, where `<version>` is a
   hash of the cached paths and compression method — per-repo isolation is
   built in; no manual key prefixing is needed. `RUNS_ON_S3_CACHE_REPO_PREFIX`

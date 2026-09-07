@@ -44,6 +44,7 @@ runs:
       env:
         OSS_ACCESS_KEY_ID: ${{ inputs.access-key-id }}
         OSS_SECRET_ACCESS_KEY: ${{ inputs.secret-access-key }}
+        ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail
 
@@ -94,6 +95,23 @@ runs:
         } >> "$GITHUB_ENV"
 
         echo "OSS cache backend: bucket=${PINGKAI_CACHE_BUCKET} endpoint=${endpoint} region=${PINGKAI_CACHE_REGION:-cn-shanghai} path-style=${PINGKAI_CACHE_PATH_STYLE:-false}"
+
+        # runs-on/cache swallows backend errors into a silent cache miss, so a
+        # misconfigured backend surfaces only as a wasted cold build. Probe the
+        # backend once here: deterministic config errors (bad credentials,
+        # missing bucket, denied policy) fail the job immediately; transient
+        # issues stay warnings to keep the cache best-effort.
+        if command -v node >/dev/null 2>&1; then
+          PINGKAI_CACHE_CHECK_ENDPOINT="${endpoint}" \
+          PINGKAI_CACHE_BUCKET="${PINGKAI_CACHE_BUCKET}" \
+          PINGKAI_CACHE_REGION="${PINGKAI_CACHE_REGION:-cn-shanghai}" \
+          PINGKAI_CACHE_PATH_STYLE="${PINGKAI_CACHE_PATH_STYLE:-false}" \
+          AWS_ACCESS_KEY_ID="${OSS_ACCESS_KEY_ID}" \
+          AWS_SECRET_ACCESS_KEY="${OSS_SECRET_ACCESS_KEY}" \
+          node "${ACTION_PATH}/check-backend.mjs"
+        else
+          echo "::warning::node not available on the runner; skipping the cache backend preflight"
+        fi
 
     - name: Restore and save cache (runs-on/cache, pinned)
       uses: runs-on/cache@3c223729b4fda74ee12f4976048dd69b420fdd26 # v5
