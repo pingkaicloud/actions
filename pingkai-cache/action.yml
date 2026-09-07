@@ -67,6 +67,20 @@ runs:
           echo "::warning::RUNS_ON_RUNNER_NAME is set; runs-on/cache will drop static AWS credentials in favor of the instance profile."
         fi
 
+        # Normalize the endpoint for the AWS SDK: it requires a scheme, and the
+        # bucket must not be baked into the hostname (virtual-hosted addressing
+        # prepends the bucket itself). Tolerate both misconfigurations.
+        endpoint="${PINGKAI_CACHE_ENDPOINT}"
+        case "${endpoint}" in
+          http://*|https://*) ;;
+          *) endpoint="https://${endpoint}" ;;
+        esac
+        bucket_prefix="${PINGKAI_CACHE_BUCKET}."
+        endpoint_host="${endpoint#*://}"
+        if [ "${endpoint_host#${bucket_prefix}}" != "${endpoint_host}" ]; then
+          endpoint="${endpoint%%://*}://${endpoint_host#${bucket_prefix}}"
+        fi
+
         # runs-on/cache reads standard AWS credentials plus its RUNS_ON_S3_*
         # knobs from the process environment. Writing them to GITHUB_ENV makes
         # them visible to the nested action step and everything later in the job.
@@ -75,11 +89,11 @@ runs:
           echo "AWS_SECRET_ACCESS_KEY=${OSS_SECRET_ACCESS_KEY}"
           echo "AWS_REGION=${PINGKAI_CACHE_REGION:-cn-shanghai}"
           echo "RUNS_ON_S3_BUCKET_CACHE=${PINGKAI_CACHE_BUCKET}"
-          echo "RUNS_ON_S3_BUCKET_ENDPOINT=${PINGKAI_CACHE_ENDPOINT}"
+          echo "RUNS_ON_S3_BUCKET_ENDPOINT=${endpoint}"
           echo "RUNS_ON_S3_FORCE_PATH_STYLE=${PINGKAI_CACHE_PATH_STYLE:-false}"
         } >> "$GITHUB_ENV"
 
-        echo "OSS cache backend: bucket=${PINGKAI_CACHE_BUCKET} endpoint=${PINGKAI_CACHE_ENDPOINT} region=${PINGKAI_CACHE_REGION:-cn-shanghai} path-style=${PINGKAI_CACHE_PATH_STYLE:-false}"
+        echo "OSS cache backend: bucket=${PINGKAI_CACHE_BUCKET} endpoint=${endpoint} region=${PINGKAI_CACHE_REGION:-cn-shanghai} path-style=${PINGKAI_CACHE_PATH_STYLE:-false}"
 
     - name: Restore and save cache (runs-on/cache, pinned)
       uses: runs-on/cache@3c223729b4fda74ee12f4976048dd69b420fdd26 # v5
