@@ -18,25 +18,28 @@ backend, keeping the `path` / `key` / `restore-keys` semantics of
 
 ## Usage
 
-With runner-level injection of the backend vars (recommended, no `env:`
-block needed in workflows):
+The backend defaults to the org CN-Shanghai OSS cache, so a typical caller
+only passes credentials and the cache inputs:
 
 ```yaml
-- uses: pingkaicloud/actions/pingkai-cache@v1
+- uses: pingkaicloud/actions/pingkai-cache@v3
   with:
     # credentials: org-level GitHub secrets only, never env
     access-key-id: ${{ secrets.PINGKAI_CACHE_ACCESS_KEY_ID }}
     secret-access-key: ${{ secrets.PINGKAI_CACHE_SECRET_ACCESS_KEY }}
     # actions/cache-compatible inputs
     path: |
-      ~/.npm
-      node_modules
-    key: npm-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+      ~/.cache/go-build
+      ~/go/pkg/mod
+    key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
     restore-keys: |
-      npm-${{ runner.os }}-
+      ${{ runner.os }}-go-
 ```
 
-Without runner injection, map the org variables once per workflow instead:
+To point a workflow (or a runner pool) at a different backend, set the
+`PINGKAI_CACHE_BUCKET` / `PINGKAI_CACHE_ENDPOINT` / `PINGKAI_CACHE_REGION`
+env vars — env always overrides the baked-in defaults, so per-pool
+injection (Shanghai OSS vs TKE COS) keeps working:
 
 ```yaml
 env:
@@ -69,17 +72,20 @@ Credentials and backend parameters are deliberately split:
     runner config must stay untouched — map `vars.PINGKAI_CACHE_*` in a
     workflow-level `env:` block as shown in the usage example.
 
-| Input | Required | Notes |
-| --- | --- | --- |
-| `access-key-id` | yes | pass `secrets.PINGKAI_CACHE_ACCESS_KEY_ID` |
-| `secret-access-key` | yes | pass `secrets.PINGKAI_CACHE_SECRET_ACCESS_KEY` |
-
-| Variable | Required | Default / example | Notes |
+| Input | Required | Default | Notes |
 | --- | --- | --- | --- |
-| `PINGKAI_CACHE_BUCKET` | yes | `pingkai-ci-cache` | dedicated cache bucket |
-| `PINGKAI_CACHE_ENDPOINT` | yes | `https://oss-cn-shanghai-internal.aliyuncs.com` | internal endpoint for ACK Shanghai runners; public endpoint otherwise |
-| `PINGKAI_CACHE_REGION` | no | `cn-shanghai` | SigV4 signing region, use the bucket region |
-| `PINGKAI_CACHE_PATH_STYLE` | no | `false` | set `true` for path-style backends (e.g. MinIO) |
+| `access-key-id` | yes | — | pass `secrets.PINGKAI_CACHE_ACCESS_KEY_ID` |
+| `secret-access-key` | yes | — | pass `secrets.PINGKAI_CACHE_SECRET_ACCESS_KEY` |
+| `bucket` | no | `github-runner-cache` | org CN-Shanghai cache bucket |
+| `endpoint` | no | `https://oss-cn-shanghai-internal.aliyuncs.com` | OSS internal endpoint for ACK Shanghai |
+| `region` | no | `cn-shanghai` | SigV4 signing region |
+
+| Variable (env, optional override) | Effect when set |
+| --- | --- |
+| `PINGKAI_CACHE_BUCKET` | overrides the `bucket` default |
+| `PINGKAI_CACHE_ENDPOINT` | overrides the `endpoint` default (auto-normalized: scheme prepended, leading `<bucket>.` stripped) |
+| `PINGKAI_CACHE_REGION` | overrides the `region` default |
+| `PINGKAI_CACHE_PATH_STYLE` | `true` for path-style backends (e.g. MinIO), default `false` |
 
 ### Org-level provisioning (configure once)
 

@@ -2,11 +2,12 @@ name: pingkai-cache
 description: >
   OSS-backed cache for the CN self-hosted runner pools, wrapping the pinned
   runs-on/cache fork with actions/cache path/key/restore-keys semantics.
-  Credentials are supplied as inputs (pass the org-level GitHub secrets);
-  the bucket and endpoint come from PINGKAI_CACHE_* environment variables
-  (org-level variables or runner-level injection). Objects are laid out as
-  cache/<repo>/<version>/<key>; per-repo isolation and prefix-matched
-  restore keys are built in.
+  Credentials are supplied as inputs (pass the org-level GitHub secrets).
+  The backend (bucket/endpoint/region) defaults to the org CN-Shanghai OSS
+  cache and can be overridden by PINGKAI_CACHE_* environment variables
+  (org-level variables or runner-level injection, e.g. per-pool endpoints).
+  Objects are laid out as cache/<repo>/<version>/<key>; per-repo isolation
+  and prefix-matched restore keys are built in.
 
 inputs:
   path:
@@ -35,6 +36,22 @@ inputs:
       OSS secret access key. Pass the org-level secret
       secrets.PINGKAI_CACHE_SECRET_ACCESS_KEY.
     required: true
+  bucket:
+    description: >
+      OSS bucket; defaults to the org CN-Shanghai runner cache bucket.
+      A PINGKAI_CACHE_BUCKET env var, when set, overrides this default.
+    default: github-runner-cache
+  endpoint:
+    description: >
+      S3-compatible endpoint; defaults to the Aliyun OSS internal endpoint
+      for CN-Shanghai. A PINGKAI_CACHE_ENDPOINT env var, when set, overrides
+      this default.
+    default: https://oss-cn-shanghai-internal.aliyuncs.com
+  region:
+    description: >
+      SigV4 signing region; defaults to cn-shanghai. A PINGKAI_CACHE_REGION
+      env var, when set, overrides this default.
+    default: cn-shanghai
 
 runs:
   using: composite
@@ -44,18 +61,22 @@ runs:
       env:
         OSS_ACCESS_KEY_ID: ${{ inputs.access-key-id }}
         OSS_SECRET_ACCESS_KEY: ${{ inputs.secret-access-key }}
+        INPUT_BUCKET: ${{ inputs.bucket }}
+        INPUT_ENDPOINT: ${{ inputs.endpoint }}
+        INPUT_REGION: ${{ inputs.region }}
         ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail
 
-        missing=
-        for var in PINGKAI_CACHE_BUCKET PINGKAI_CACHE_ENDPOINT; do
-          if [ -z "${!var:-}" ]; then
-            missing="${missing} ${var}"
-          fi
-        done
-        if [ -n "${missing}" ]; then
-          echo "::error::Missing required env:${missing}. Provide PINGKAI_CACHE_* via org-level variables mapped in the workflow env block, or via runner-level injection. See pingkai-cache/README.md."
+        # Env wins over the baked-in defaults so pools can inject per-region
+        # backends (Shanghai OSS vs TKE COS) without every workflow opting in.
+        bucket="${PINGKAI_CACHE_BUCKET:-${INPUT_BUCKET:-}}"
+        endpoint="${PINGKAI_CACHE_ENDPOINT:-${INPUT_ENDPOINT:-}}"
+        region="${PINGKAI_CACHE_REGION:-${INPUT_REGION:-cn-shanghai}}"
+        path_style="${PINGKAI_CACHE_PATH_STYLE:-false}"
+
+        if [ -z "${bucket}" ] || [ -z "${endpoint}" ]; then
+          echo "::error::No cache backend resolved: bucket/endpoint are empty in both PINGKAI_CACHE_* env vars and action defaults. See pingkai-cache/README.md."
           exit 1
         fi
 
@@ -71,12 +92,11 @@ runs:
         # Normalize the endpoint for the AWS SDK: it requires a scheme, and the
         # bucket must not be baked into the hostname (virtual-hosted addressing
         # prepends the bucket itself). Tolerate both misconfigurations.
-        endpoint="${PINGKAI_CACHE_ENDPOINT}"
         case "${endpoint}" in
           http://*|https://*) ;;
           *) endpoint="https://${endpoint}" ;;
         esac
-        bucket_prefix="${PINGKAI_CACHE_BUCKET}."
+        bucket_prefix="${bucket}."
         endpoint_host="${endpoint#*://}"
         if [ "${endpoint_host#${bucket_prefix}}" != "${endpoint_host}" ]; then
           endpoint="${endpoint%%://*}://${endpoint_host#${bucket_prefix}}"
@@ -88,13 +108,13 @@ runs:
         {
           echo "AWS_ACCESS_KEY_ID=${OSS_ACCESS_KEY_ID}"
           echo "AWS_SECRET_ACCESS_KEY=${OSS_SECRET_ACCESS_KEY}"
-          echo "AWS_REGION=${PINGKAI_CACHE_REGION:-cn-shanghai}"
-          echo "RUNS_ON_S3_BUCKET_CACHE=${PINGKAI_CACHE_BUCKET}"
+          echo "AWS_REGION=${region}"
+          echo "RUNS_ON_S3_BUCKET_CACHE=${bucket}"
           echo "RUNS_ON_S3_BUCKET_ENDPOINT=${endpoint}"
-          echo "RUNS_ON_S3_FORCE_PATH_STYLE=${PINGKAI_CACHE_PATH_STYLE:-false}"
+          echo "RUNS_ON_S3_FORCE_PATH_STYLE=${path_style}"
         } >> "$GITHUB_ENV"
 
-        echo "OSS cache backend: bucket=${PINGKAI_CACHE_BUCKET} endpoint=${endpoint} region=${PINGKAI_CACHE_REGION:-cn-shanghai} path-style=${PINGKAI_CACHE_PATH_STYLE:-false}"
+        echo "OSS cache backend: bucket=${bucket} endpoint=${endpoint} region=${region} path-style=${path_style}"
 
         # runs-on/cache swallows backend errors into a silent cache miss, so a
         # misconfigured backend surfaces only as a wasted cold build. Probe the
@@ -103,9 +123,9 @@ runs:
         # issues stay warnings to keep the cache best-effort.
         if command -v node >/dev/null 2>&1; then
           PINGKAI_CACHE_CHECK_ENDPOINT="${endpoint}" \
-          PINGKAI_CACHE_BUCKET="${PINGKAI_CACHE_BUCKET}" \
-          PINGKAI_CACHE_REGION="${PINGKAI_CACHE_REGION:-cn-shanghai}" \
-          PINGKAI_CACHE_PATH_STYLE="${PINGKAI_CACHE_PATH_STYLE:-false}" \
+          PINGKAI_CACHE_BUCKET="${bucket}" \
+          PINGKAI_CACHE_REGION="${region}" \
+          PINGKAI_CACHE_PATH_STYLE="${path_style}" \
           AWS_ACCESS_KEY_ID="${OSS_ACCESS_KEY_ID}" \
           AWS_SECRET_ACCESS_KEY="${OSS_SECRET_ACCESS_KEY}" \
           node "${ACTION_PATH}/check-backend.mjs"
