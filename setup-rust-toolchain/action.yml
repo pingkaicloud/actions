@@ -22,6 +22,18 @@ inputs:
     description: Comma-separated components passed to dtolnay/rust-toolchain.
     required: false
     default: ""
+  rustup-dist-server:
+    description: >
+      Rustup distribution server. An existing RUSTUP_DIST_SERVER environment
+      variable takes precedence for backwards compatibility.
+    required: false
+    default: "https://rsproxy.cn"
+  rustup-update-root:
+    description: >
+      Rustup update root. An existing RUSTUP_UPDATE_ROOT environment variable
+      takes precedence for backwards compatibility.
+    required: false
+    default: "https://rsproxy.cn/rustup"
   enable-cargo-cache:
     description: >
       Link the job-local Cargo home to the per-repo NAS dependency cache.
@@ -70,6 +82,14 @@ outputs:
 runs:
   using: composite
   steps:
+    - id: rustup-config
+      name: Configure Rustup mirror defaults
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        RUSTUP_DIST_SERVER_DEFAULT: ${{ inputs.rustup-dist-server }}
+        RUSTUP_UPDATE_ROOT_DEFAULT: ${{ inputs.rustup-update-root }}
+      run: bash "${ACTION_PATH}/rustup-config.sh"
     - id: deps
       name: Setup Cargo and Lindera caches
       shell: bash
@@ -102,6 +122,9 @@ runs:
       name: Install Rust toolchain
       if: steps.restore.outputs.cache-hit != 'true'
       uses: dtolnay/rust-toolchain@master
+      env:
+        RUSTUP_DIST_SERVER: ${{ steps.rustup-config.outputs.dist_server }}
+        RUSTUP_UPDATE_ROOT: ${{ steps.rustup-config.outputs.update_root }}
       with:
         toolchain: ${{ inputs.toolchain }}
         targets: ${{ inputs.targets }}
