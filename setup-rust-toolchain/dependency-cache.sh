@@ -181,6 +181,12 @@ ensure_directory "${CARGO_HOME}/bin" "job-local Cargo bin directory"
 ensure_directory "${CARGO_HOME}/git" "job-local Cargo git directory"
 ensure_directory "${CARGO_HOME}/registry" "job-local Cargo registry directory"
 ensure_directory "${CARGO_HOME}/registry/src" "job-local Cargo registry sources"
+# RUSTUP_HOME is job-local too. Exporting it here (instead of only from the
+# toolchain bundle path) lets callers that disable the NAS toolchain bundle
+# and cache RUSTUP_HOME via object storage point dtolnay/rust-toolchain at
+# the same directory.
+RUSTUP_HOME="${RUNNER_TEMP}/rustup-home"
+ensure_directory "${RUSTUP_HOME}" "job-local Rustup home"
 
 if [ "${cargo_cache_enabled}" = true ]; then
   resolve_cache_dir "cargo" "${CARGO_CACHE_KEY}"
@@ -208,6 +214,7 @@ fi
 
 {
   echo "CARGO_HOME=${CARGO_HOME}"
+  echo "RUSTUP_HOME=${RUSTUP_HOME}"
   if [ -n "${LINDERA_CACHE_KEY}" ]; then
     echo "LINDERA_CACHE=${LINDERA_CACHE_DIR}"
     echo "LINDERA_CACHE_LOCK=${LINDERA_CACHE_DIR}/.lock"
