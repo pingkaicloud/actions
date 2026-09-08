@@ -309,6 +309,7 @@ restore_bundle() {
     mkdir -p "${LOCAL_CARGO_HOME}/bin"
     return 1
   fi
+  touch -- "${CACHE_DIR}" || warn "failed to update Rust toolchain cache access time: ${CACHE_DIR}"
   {
     echo "RUST_TOOLCHAIN_NAME=${toolchain_name}"
     echo "RUST_TOOLCHAIN_CACHEKEY=${toolchain_cachekey}"
@@ -316,6 +317,7 @@ restore_bundle() {
   } >> "${GITHUB_ENV}"
   echo "cache-hit=true" >> "${GITHUB_OUTPUT}"
   echo "Rust toolchain cache hit: ${CACHE_KEY}"
+  prune_stale_toolchain_bundles
 }
 
 wait_for_install_claim() {
@@ -465,6 +467,7 @@ save() {
       echo "RUST_TOOLCHAIN_CACHEKEY=${RUST_TOOLCHAIN_CACHEKEY}"
     } >> "${GITHUB_ENV}"
     echo "Rust toolchain cache was populated by another job: ${CACHE_KEY}"
+    prune_stale_toolchain_bundles
     return 0
   fi
 
@@ -510,6 +513,7 @@ save() {
   trap - EXIT
   remove_owned_install_claim
   release_lock
+  prune_stale_toolchain_bundles
   {
     echo "RUST_TOOLCHAIN_NAME=${RUST_TOOLCHAIN_NAME}"
     echo "RUST_TOOLCHAIN_CACHEKEY=${RUST_TOOLCHAIN_CACHEKEY}"
@@ -531,6 +535,36 @@ cleanup() {
   release_lock
 }
 
+# Delete toolchain bundles for other parameter hashes that have not been used
+# for TOOLCHAIN_CACHE_GC_DAYS days. Each pin bump otherwise leaves a ~1.5GB
+# orphan on the shared tool cache forever. A directory lock is probed per
+# candidate so an in-flight restore/save of that hash is never deleted; if a
+# job starts between the probe and the removal it simply finds a cache miss
+# and reinstalls. Best effort: failures are warnings, never fatal.
+prune_stale_toolchain_bundles() {
+  local days root dir lock_probe
+  days="${TOOLCHAIN_CACHE_GC_DAYS}"
+  if ! [[ "${days}" =~ ^[0-9]+$ ]] || [ "${days}" -eq 0 ]; then
+    return 0
+  fi
+  root="${CACHE_ROOT}/rust-toolchain"
+  [ -d "${root}" ] || return 0
+  while IFS= read -r -d '' dir; do
+    [ -f "${dir}/bundle/.complete" ] || continue
+    lock_probe="${dir}.lock.d"
+    if ! mkdir -- "${lock_probe}" 2>/dev/null; then
+      continue
+    fi
+    if rm -rf -- "${dir}"; then
+      echo "pruned stale toolchain bundle: ${dir}"
+    else
+      echo "::warning::failed to prune stale toolchain bundle: ${dir}" >&2
+    fi
+    rmdir -- "${lock_probe}" 2>/dev/null || true
+  done < <(find "${root}" -mindepth 1 -maxdepth 1 -type d \
+    ! -path "${CACHE_DIR}" -mtime "+${days}" -print0 2>/dev/null)
+}
+
 : "${RUST_TOOLCHAIN:?toolchain is required}"
 : "${RUST_TARGETS:=}"
 : "${RUST_TARGET:=}"
@@ -540,6 +574,7 @@ cleanup() {
 : "${CACHE_LOCK_HEARTBEAT_SECONDS:=30}"
 : "${CACHE_LOCK_STALE_SECONDS:=300}"
 : "${CACHE_LOCK_POLL_SECONDS:=1}"
+: "${TOOLCHAIN_CACHE_GC_DAYS:=14}"
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 : "${GITHUB_RUN_ID:?GITHUB_RUN_ID is required}"
 : "${GITHUB_JOB:?GITHUB_JOB is required}"

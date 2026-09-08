@@ -53,10 +53,16 @@ inputs:
       env var, when set, overrides this default.
     default: cn-shanghai
 
+outputs:
+  cache-hit:
+    description: Whether an exact match was restored for the primary key.
+    value: ${{ steps.cache.outputs.cache-hit }}
+
 runs:
   using: composite
   steps:
-    - name: Wire up the OSS cache backend
+    - id: backend
+      name: Resolve and check the OSS cache backend
       shell: bash
       env:
         OSS_ACCESS_KEY_ID: ${{ inputs.access-key-id }}
@@ -102,17 +108,15 @@ runs:
           endpoint="${endpoint%%://*}://${endpoint_host#${bucket_prefix}}"
         fi
 
-        # runs-on/cache reads standard AWS credentials plus its RUNS_ON_S3_*
-        # knobs from the process environment. Writing them to GITHUB_ENV makes
-        # them visible to the nested action step and everything later in the job.
+        # Export only non-secret backend settings as step outputs. Credentials
+        # stay scoped to this action and the nested cache action instead of
+        # leaking into every later step through GITHUB_ENV.
         {
-          echo "AWS_ACCESS_KEY_ID=${OSS_ACCESS_KEY_ID}"
-          echo "AWS_SECRET_ACCESS_KEY=${OSS_SECRET_ACCESS_KEY}"
-          echo "AWS_REGION=${region}"
-          echo "RUNS_ON_S3_BUCKET_CACHE=${bucket}"
-          echo "RUNS_ON_S3_BUCKET_ENDPOINT=${endpoint}"
-          echo "RUNS_ON_S3_FORCE_PATH_STYLE=${path_style}"
-        } >> "$GITHUB_ENV"
+          echo "bucket=${bucket}"
+          echo "endpoint=${endpoint}"
+          echo "region=${region}"
+          echo "path_style=${path_style}"
+        } >> "$GITHUB_OUTPUT"
 
         echo "OSS cache backend: bucket=${bucket} endpoint=${endpoint} region=${region} path-style=${path_style}"
 
@@ -147,8 +151,16 @@ runs:
           echo "::warning::node not found on PATH or under the runner's externals; skipping the cache backend preflight"
         fi
 
-    - name: Restore and save cache (runs-on/cache, pinned)
+    - id: cache
+      name: Restore and save cache (runs-on/cache, pinned)
       uses: runs-on/cache@3c223729b4fda74ee12f4976048dd69b420fdd26 # v5
+      env:
+        AWS_ACCESS_KEY_ID: ${{ inputs.access-key-id }}
+        AWS_SECRET_ACCESS_KEY: ${{ inputs.secret-access-key }}
+        AWS_REGION: ${{ steps.backend.outputs.region }}
+        RUNS_ON_S3_BUCKET_CACHE: ${{ steps.backend.outputs.bucket }}
+        RUNS_ON_S3_BUCKET_ENDPOINT: ${{ steps.backend.outputs.endpoint }}
+        RUNS_ON_S3_FORCE_PATH_STYLE: ${{ steps.backend.outputs.path_style }}
       with:
         path: ${{ inputs.path }}
         key: ${{ inputs.key }}
