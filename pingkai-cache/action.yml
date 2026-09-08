@@ -92,7 +92,7 @@ runs:
         fi
 
         if [ -n "${RUNS_ON_RUNNER_NAME:-}" ]; then
-          echo "::warning::RUNS_ON_RUNNER_NAME is set; runs-on/cache will drop static AWS credentials in favor of the instance profile."
+          echo "::notice::RUNS_ON_RUNNER_NAME is set globally; pingkai-cache clears it for the nested cache step so the supplied access-key inputs remain in use."
         fi
 
         # Normalize the endpoint for the AWS SDK: it requires a scheme, and the
@@ -155,6 +155,9 @@ runs:
       name: Restore and save cache (runs-on/cache, pinned)
       uses: runs-on/cache@3c223729b4fda74ee12f4976048dd69b420fdd26 # v5
       env:
+        # runs-on/cache otherwise drops static credentials in favor of the
+        # runner instance profile when this runner metadata variable is set.
+        RUNS_ON_RUNNER_NAME: ""
         AWS_ACCESS_KEY_ID: ${{ inputs.access-key-id }}
         AWS_SECRET_ACCESS_KEY: ${{ inputs.secret-access-key }}
         AWS_REGION: ${{ steps.backend.outputs.region }}

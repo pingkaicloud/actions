@@ -27,5 +27,9 @@ grep -Fq 'RUNS_ON_S3_BUCKET_CACHE: ${{ steps.backend.outputs.bucket }}' "${ACTIO
   || fail "nested cache action does not consume the resolved backend"
 grep -Fq 'RUNS_ON_S3_FORCE_PATH_STYLE: ${{ steps.backend.outputs.path_style }}' "${ACTION}" \
   || fail "nested cache action does not consume the resolved path-style setting"
+grep -Fq 'RUNS_ON_RUNNER_NAME: ""' "${ACTION}" \
+  || fail "nested cache action does not clear instance-profile mode"
+grep -Fq 'pingkai-cache clears it for the nested cache step' "${ACTION}" \
+  || fail "instance-profile override is not reported"
 
 echo "PASS: pingkai-cache"

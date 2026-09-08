@@ -200,6 +200,12 @@ acquire_lock() {
   deadline=$(( $(date +%s) + CACHE_LOCK_TIMEOUT_SECONDS ))
   while true; do
     if mkdir -- "${LOCK_PATH}" 2>/dev/null; then
+      # GC or a failed install cleanup may remove CACHE_DIR while this job is
+      # waiting for the sibling lock. Recreate it only after owning the lock.
+      if ! mkdir -p -- "${CACHE_DIR}"; then
+        rmdir -- "${LOCK_PATH}" 2>/dev/null || true
+        return 1
+      fi
       if ! touch -- "${LOCK_HEARTBEAT_FILE}"; then
         rmdir -- "${LOCK_PATH}" 2>/dev/null || true
         return 1
@@ -235,16 +241,22 @@ release_lock() {
   fi
 }
 
-claim_value() {
-  local name="$1"
+claim_value_at() {
+  local claim_path="$1"
+  local name="$2"
   local line
 
+  [ -f "${claim_path}" ] || return 1
   while IFS= read -r line; do
     case "${line}" in
       "${name}"=*) printf '%s\n' "${line#*=}"; return 0 ;;
     esac
-  done < "${INSTALL_CLAIM_PATH}"
+  done < "${claim_path}"
   return 1
+}
+
+claim_value() {
+  claim_value_at "${INSTALL_CLAIM_PATH}" "$1"
 }
 
 claim_owned_by_current_job() {
@@ -253,9 +265,14 @@ claim_owned_by_current_job() {
 }
 
 claim_is_stale() {
+  claim_is_stale_at "${INSTALL_CLAIM_PATH}"
+}
+
+claim_is_stale_at() {
+  local claim_path="$1"
   local started_at now
 
-  started_at="$(claim_value started_at || true)"
+  started_at="$(claim_value_at "${claim_path}" started_at || true)"
   if ! [[ "${started_at}" =~ ^[0-9]+$ ]]; then
     return 0
   fi
@@ -532,6 +549,13 @@ cleanup() {
     return 0
   fi
   remove_owned_install_claim
+  # A failed install leaves the cache directory behind. Remove it only while
+  # holding this key's lock and only when no complete bundle or replacement
+  # install claim appeared. A concurrent successful job therefore wins.
+  if [ ! -f "${BUNDLE_DIR}/.complete" ] && [ ! -e "${INSTALL_CLAIM_PATH}" ]; then
+    rm -rf -- "${CACHE_DIR}"
+    echo "removed incomplete Rust toolchain cache: ${CACHE_DIR}"
+  fi
   release_lock
 }
 
@@ -542,17 +566,29 @@ cleanup() {
 # job starts between the probe and the removal it simply finds a cache miss
 # and reinstalls. Best effort: failures are warnings, never fatal.
 prune_stale_toolchain_bundles() {
-  local days root dir lock_probe
+  local days root dir cache_entry lock_probe claim_path
   days="${TOOLCHAIN_CACHE_GC_DAYS}"
-  if ! [[ "${days}" =~ ^[0-9]+$ ]] || [ "${days}" -eq 0 ]; then
+  if ! [[ "${days}" =~ ^[0-9]+$ ]]; then
+    warn "TOOLCHAIN_CACHE_GC_DAYS is not a non-negative integer; skipping toolchain cache GC"
+    return 0
+  fi
+  if [ "${days}" -eq 0 ]; then
     return 0
   fi
   root="${CACHE_ROOT}/rust-toolchain"
   [ -d "${root}" ] || return 0
   while IFS= read -r -d '' dir; do
-    [ -f "${dir}/bundle/.complete" ] || continue
+    cache_entry="${dir##*/}"
+    # Only hash_inputs() output is owned by this action. This also excludes
+    # sibling lock/reclaim directories and any manually managed content.
+    [[ "${cache_entry}" =~ ^[0-9a-f]{64}$ ]] || continue
     lock_probe="${dir}.lock.d"
     if ! mkdir -- "${lock_probe}" 2>/dev/null; then
+      continue
+    fi
+    claim_path="${dir}/${INSTALL_CLAIM_FILE_NAME}"
+    if [ -f "${claim_path}" ] && ! claim_is_stale_at "${claim_path}"; then
+      rmdir -- "${lock_probe}" 2>/dev/null || true
       continue
     fi
     if rm -rf -- "${dir}"; then

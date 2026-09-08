@@ -104,8 +104,11 @@ Credentials and backend parameters are deliberately split:
   runners are in the same cloud/region.
 - Lifecycle rule expiring objects under `cache/` after N days (e.g. 30) —
   this is the GC; the action itself never deletes objects.
-- Minimal RAM policy scoped to the bucket: `oss:GetObject`, `oss:PutObject`,
-  `oss:ListObjects`, `oss:AbortMultipartUpload` on `acs:oss:*:<account>:<bucket>/*`.
+- Minimal RAM policy uses two resource scopes: `oss:ListObjects` on the bucket
+  resource `acs:oss:*:<account>:<bucket>`, and `oss:GetObject`, `oss:PutObject`,
+  `oss:AbortMultipartUpload` on the object resource
+  `acs:oss:*:<account>:<bucket>/*`. Keep the bucket-level ListObjects grant
+  separate from the object-level grants.
 - For the TKE pool, provision an equivalent COS bucket and point the env vars
   at its S3-compatible endpoint; the wrapper is unchanged.
 
@@ -127,8 +130,10 @@ Credentials and backend parameters are deliberately split:
   match wins — same feel as `actions/cache` restore-keys.
 - Restores download a tar archive and extract it; GB-scale caches take
   minutes, unlike zero-copy NAS mounts. Prefer narrow `path` sets.
-- `RUNS_ON_RUNNER_NAME` must stay unset on our runners: the backend drops
-  static AWS credentials in favor of an instance profile when it is set.
+- A runner-level `RUNS_ON_RUNNER_NAME` may remain set. The action explicitly
+  clears it for the nested `runs-on/cache` step so that both the preflight and
+  the actual cache operation use the supplied static credentials rather than
+  switching to an instance profile.
 - Endpoint canonical form is `https://oss-<region>[-internal].aliyuncs.com`
   **without** the bucket in the hostname (virtual-hosted addressing adds it).
   The wire-up step auto-normalizes common mistakes: it prepends `https://`

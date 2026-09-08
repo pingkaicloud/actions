@@ -323,6 +323,72 @@ done
 [ -n "${failed_claim_file}" ] || fail "failed install did not create an installation claim"
 bash "${SCRIPT_DIR}/toolchain-cache.sh" cleanup
 assert_not_exists "${failed_claim_file}"
+assert_not_exists "$(dirname "${failed_claim_file}")"
+
+# A late cleanup from a failed job must not delete a bundle that another job
+# claimed and populated in the meantime.
+export RUST_COMPONENTS=late-cleanup
+: > "${GITHUB_OUTPUT}"
+GITHUB_RUN_ID=failed-run GITHUB_JOB=failed-installer \
+  bash "${SCRIPT_DIR}/toolchain-cache.sh" restore
+replacement_claim_file=""
+for candidate in "${RUNNER_TOOL_CACHE}"/rust-toolchain/*/.installing; do
+  if [ -f "${candidate}" ]; then
+    replacement_claim_file="${candidate}"
+    break
+  fi
+done
+[ -n "${replacement_claim_file}" ] || fail "late-cleanup test did not create an installation claim"
+replacement_cache_dir="$(dirname "${replacement_claim_file}")"
+
+: > "${TEST_ROOT}/replacement.env"
+: > "${TEST_ROOT}/replacement.output"
+: > "${TEST_ROOT}/replacement.path"
+(
+  GITHUB_RUN_ID=successful-run \
+  GITHUB_JOB=successful-installer \
+  GITHUB_ENV="${TEST_ROOT}/replacement.env" \
+  GITHUB_OUTPUT="${TEST_ROOT}/replacement.output" \
+  GITHUB_PATH="${TEST_ROOT}/replacement.path" \
+    bash "${SCRIPT_DIR}/toolchain-cache.sh" restore
+) &
+replacement_pid=$!
+sleep 1
+if ! kill -0 "${replacement_pid}" 2>/dev/null; then
+  fail "replacement installer did not wait for the failed job's claim"
+fi
+GITHUB_RUN_ID=failed-run GITHUB_JOB=failed-installer \
+  bash "${SCRIPT_DIR}/toolchain-cache.sh" cleanup
+wait "${replacement_pid}"
+grep -Fq 'cache-hit=false' "${TEST_ROOT}/replacement.output" \
+  || fail "replacement installer did not claim the cleaned cache"
+assert_contains "${replacement_claim_file}" "owner=successful-run/successful-installer/1"
+
+mkdir -p "${RUNNER_TEMP}/rustup-home/toolchains/nightly-2026-01-30/bin" "${RUNNER_TEMP}/cargo-home/bin"
+printf 'rustc\n' > "${RUNNER_TEMP}/rustup-home/toolchains/nightly-2026-01-30/bin/rustc"
+cp "${TEST_ROOT}/bin/rustup" "${RUNNER_TEMP}/cargo-home/bin/rustup"
+GITHUB_RUN_ID=successful-run \
+GITHUB_JOB=successful-installer \
+GITHUB_ENV="${TEST_ROOT}/replacement.env" \
+GITHUB_OUTPUT="${TEST_ROOT}/replacement.output" \
+GITHUB_PATH="${TEST_ROOT}/replacement.path" \
+RUST_TOOLCHAIN_NAME=nightly-2026-01-30 \
+RUST_TOOLCHAIN_CACHEKEY=20260130replacement \
+  bash "${SCRIPT_DIR}/toolchain-cache.sh" save
+assert_file "${replacement_cache_dir}/bundle/.complete"
+
+GITHUB_RUN_ID=failed-run GITHUB_JOB=failed-installer \
+  bash "${SCRIPT_DIR}/toolchain-cache.sh" cleanup
+assert_file "${replacement_cache_dir}/bundle/.complete"
+: > "${TEST_ROOT}/replacement-verify.output"
+GITHUB_RUN_ID=verify-run \
+GITHUB_JOB=verify \
+GITHUB_ENV="${TEST_ROOT}/replacement.env" \
+GITHUB_OUTPUT="${TEST_ROOT}/replacement-verify.output" \
+GITHUB_PATH="${TEST_ROOT}/replacement.path" \
+  bash "${SCRIPT_DIR}/toolchain-cache.sh" restore
+grep -Fq 'cache-hit=true' "${TEST_ROOT}/replacement-verify.output" \
+  || fail "late cleanup removed the replacement job's completed bundle"
 
 # A waiter must be able to reclaim an abandoned claim after its lease expires,
 # even when the configured wait timeout is shorter than that lease.
@@ -405,23 +471,45 @@ if CARGO_HOME="${cargo_home}" GITHUB_ENV="${TEST_ROOT}/badmirror.env" CRATES_MIR
 fi
 
 
-# Stale toolchain bundles are pruned after a successful save; the current
-# bundle and recently used ones survive, and a lock-held candidate is kept.
+# Stale toolchain entries are pruned after a successful restore; the current
+# bundle, recently used entries, live claims, and lock-held candidates survive.
 gc_root="${RUNNER_TOOL_CACHE}/rust-toolchain"
-mkdir -p "${gc_root}/stalehash/bundle" "${gc_root}/recentshash/bundle" "${gc_root}/lockedhash/bundle"
-printf 'complete\n' > "${gc_root}/stalehash/bundle/.complete"
-printf 'complete\n' > "${gc_root}/recentshash/bundle/.complete"
-printf 'complete\n' > "${gc_root}/lockedhash/bundle/.complete"
-touch -t 202001010000 "${gc_root}/stalehash" "${gc_root}/stalehash/bundle"
-mkdir -- "${gc_root}/lockedhash.lock.d" 2>/dev/null || true
+stale_complete_key="$(printf '%064d' 1)"
+stale_incomplete_key="$(printf '%064d' 2)"
+live_claim_key="$(printf '%064d' 3)"
+recent_key="$(printf '%064d' 4)"
+locked_key="$(printf '%064d' 5)"
+mkdir -p "${gc_root}/${stale_complete_key}/bundle" \
+  "${gc_root}/${stale_incomplete_key}" \
+  "${gc_root}/${live_claim_key}" \
+  "${gc_root}/${recent_key}/bundle" \
+  "${gc_root}/${locked_key}/bundle" \
+  "${gc_root}/unmanaged-directory"
+printf 'complete\n' > "${gc_root}/${stale_complete_key}/bundle/.complete"
+printf 'complete\n' > "${gc_root}/${recent_key}/bundle/.complete"
+printf 'complete\n' > "${gc_root}/${locked_key}/bundle/.complete"
+printf 'owner=active-run/active-job/1\nstarted_at=%s\n' "$(date +%s)" \
+  > "${gc_root}/${live_claim_key}/.installing"
+touch -t 202001010000 \
+  "${gc_root}/${stale_complete_key}" \
+  "${gc_root}/${stale_complete_key}/bundle" \
+  "${gc_root}/${stale_incomplete_key}" \
+  "${gc_root}/${live_claim_key}" \
+  "${gc_root}/unmanaged-directory"
+mkdir -- "${gc_root}/${locked_key}.lock.d" 2>/dev/null || true
+touch -t 202001010000 "${gc_root}/${locked_key}.lock.d"
 export RUST_COMPONENTS="clippy,rustfmt"
 : > "${GITHUB_OUTPUT}"
 bash "${SCRIPT_DIR}/toolchain-cache.sh" restore
-[ ! -e "${gc_root}/stalehash" ] || fail "stale toolchain bundle was not pruned"
-[ -e "${gc_root}/recentshash" ] || fail "recent toolchain bundle was pruned"
-[ -e "${gc_root}/lockedhash" ] || fail "lock-held toolchain bundle was pruned"
+[ ! -e "${gc_root}/${stale_complete_key}" ] || fail "stale toolchain bundle was not pruned"
+[ ! -e "${gc_root}/${stale_incomplete_key}" ] || fail "stale incomplete toolchain cache was not pruned"
+[ -e "${gc_root}/${live_claim_key}" ] || fail "toolchain cache with a live claim was pruned"
+[ -e "${gc_root}/${recent_key}" ] || fail "recent toolchain bundle was pruned"
+[ -e "${gc_root}/${locked_key}" ] || fail "lock-held toolchain bundle was pruned"
+[ -d "${gc_root}/${locked_key}.lock.d" ] || fail "toolchain lock directory was pruned"
+[ -d "${gc_root}/unmanaged-directory" ] || fail "unmanaged toolchain directory was pruned"
 [ "$(stat -c %Y "${gc_root}/${cache_key}" 2>/dev/null || stat -f %m "${gc_root}/${cache_key}")" -gt 1577836800 ] \
   || fail "restored toolchain bundle access time was not refreshed"
-rmdir -- "${gc_root}/lockedhash.lock.d" 2>/dev/null || true
+rmdir -- "${gc_root}/${locked_key}.lock.d" 2>/dev/null || true
 
 echo "PASS: setup-rust-toolchain"
