@@ -1,0 +1,55 @@
+name: setup-terraform
+description: >
+  Install Terraform CLI with hashicorp/setup-terraform@v3 under the shared
+  runner tool cache. Each invocation uses its own directory; upstream always
+  downloads Terraform and does not reuse previously installed versions.
+
+inputs:
+  terraform-version:
+    description: Terraform CLI version or constraint passed to hashicorp/setup-terraform.
+    required: true
+  terraform-wrapper:
+    description: Install the upstream wrapper exposing stdout, stderr, and exitcode outputs.
+    required: false
+    default: "true"
+  cli-config-credentials-hostname:
+    description: HCP Terraform or Terraform Enterprise credentials hostname.
+    required: false
+    default: app.terraform.io
+  cli-config-credentials-token:
+    description: API token written to the Terraform CLI configuration by the upstream action.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - id: cache
+      name: Prepare Terraform installation directory
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        cache_root="${RUNNER_TOOL_CACHE:-/opt/hostedtoolcache}"
+        case "$cache_root" in
+          /*) ;;
+          *) echo "::error::RUNNER_TOOL_CACHE must be an absolute path"; exit 1 ;;
+        esac
+        case "$cache_root" in
+          *$'\n'*|*$'\r'*) echo "::error::RUNNER_TOOL_CACHE must not contain newlines"; exit 1 ;;
+        esac
+        mkdir -p "$cache_root/terraform"
+        install_root="$(mktemp -d "$cache_root/terraform/install.XXXXXXXXXX")"
+        echo "install-root=$install_root" >> "$GITHUB_OUTPUT"
+
+    - name: Install Terraform CLI
+      uses: hashicorp/setup-terraform@v3
+      env:
+        # Upstream extracts directly into RUNNER_TEMP and adds that directory
+        # to PATH. RUNNER_TOOL_CACHE alone does not control its install path.
+        RUNNER_TEMP: ${{ steps.cache.outputs.install-root }}
+      with:
+        terraform_version: ${{ inputs.terraform-version }}
+        terraform_wrapper: ${{ inputs.terraform-wrapper }}
+        cli_config_credentials_hostname: ${{ inputs.cli-config-credentials-hostname }}
+        cli_config_credentials_token: ${{ inputs.cli-config-credentials-token }}

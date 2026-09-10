@@ -11,6 +11,7 @@ with the job token).
 | [`nas-cache`](nas-cache/) | Per-repo Go/npm/pip/Pulumi/Cargo/Lindera caches on the shared runner NAS (`${RUNNER_CACHE}/<org>/<repo>/...`) |
 | [`pingkai-cache`](pingkai-cache/) | OSS-backed `actions/cache` drop-in (wraps pinned `runs-on/cache`) for CN runner pools; credentials via org secrets inputs, backend via `PINGKAI_CACHE_*` env vars, GC via bucket lifecycle |
 | [`setup-pulumi`](setup-pulumi/) | Reuse/install the Pulumi CLI in the shared runner tool cache and prepend it to `GITHUB_PATH` so `pulumi/actions` skips its reinstall |
+| [`setup-terraform`](setup-terraform/) | Install Terraform CLI and its optional wrapper under the shared runner tool cache using `hashicorp/setup-terraform@v3` |
 
 ## Usage
 
@@ -50,6 +51,29 @@ api.pulumi.com; on a miss the embedded step installs as usual and its
 tool-cache registration warms the cache for later jobs. Either way later
 `pulumi/actions` preview/up steps in the job pin the same version and also
 skip their reinstall.
+
+```yaml
+- uses: pingkaicloud/actions/setup-terraform@v1
+  with:
+    terraform-version: '1.9.8'
+    terraform-wrapper: 'true'
+```
+
+`setup-terraform` runs `hashicorp/setup-terraform@v3` as its final step.
+It sets `RUNNER_TEMP` only for that step to a unique directory under
+`${RUNNER_TOOL_CACHE:-/opt/hostedtoolcache}/terraform/install.<random>`.
+The downloaded archive, extracted CLI, and optional wrapper all stay beneath
+that directory; upstream adds the extracted directory to `GITHUB_PATH` and
+sets `TERRAFORM_CLI_PATH` when the wrapper is enabled. Other steps retain their
+original `RUNNER_TEMP`. This Bash action targets Linux and macOS runners.
+
+Unlike `setup-pulumi`, upstream Terraform setup always downloads the requested
+version, so this controls installation placement but does not provide cache
+hits. Independent directories avoid concurrent jobs overwriting each other's
+CLI or wrapper. These directories persist and require separate cleanup after
+jobs finish. Optional `cli-config-credentials-hostname` and
+`cli-config-credentials-token` inputs are forwarded to upstream; credentials
+retain upstream's job-local configuration location, outside the shared cache.
 
 Requires the runner scale set to export `RUNNER_CACHE` (NAS mount).
 The NAS mount must provide cross-client file locking because Go coordinates
