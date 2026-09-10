@@ -1,0 +1,88 @@
+name: setup-terraform
+description: >
+  Make the requested Terraform CLI available for the job: reuse it from the
+  shared runner tool cache (NAS-backed RUNNER_TOOL_CACHE) when present. On a
+  cache hit, skip hashicorp/setup-terraform@v3 entirely; on a miss, run it to
+  install the CLI and copy the installation into the tool cache, warming it
+  for later jobs. Either way terraform is on GITHUB_PATH for the rest of the
+  job. When enabled, the wrapper is cached alongside the CLI and
+  TERRAFORM_CLI_PATH is set so it can locate the cached binary.
+
+inputs:
+  terraform_version:
+    description: >
+      Exact Terraform CLI version, e.g. 1.9.8. A leading "v" is accepted.
+      Must match the version pinned by the hashicorp/setup-terraform steps in the job.
+    required: true
+  terraform_wrapper:
+    description: >
+      Whether or not to install a wrapper to wrap subsequent calls of the
+      `terraform` binary and expose its STDOUT, STDERR, and exit code as outputs
+      named `stdout`, `stderr`, and `exitcode` respectively. Defaults to `true`.
+    default: 'true'
+    required: false
+
+runs:
+  using: composite
+  steps:
+    - id: cache
+      name: Reuse cached Terraform if present
+      shell: bash
+      env:
+        TERRAFORM_VERSION: ${{ inputs.terraform_version }}
+        TERRAFORM_WRAPPER: ${{ inputs.terraform_wrapper }}
+      run: |
+        set -euo pipefail
+
+        version="${TERRAFORM_VERSION#v}"
+        case "$version" in
+          ''|*[!0-9.]*) echo "::error::invalid terraform_version: ${TERRAFORM_VERSION}" && exit 1 ;;
+        esac
+        case "$(uname -m)" in
+          x86_64) arch=x64 ;;
+          aarch64|arm64) arch=arm64 ;;
+          *) echo "::error::unsupported architecture $(uname -m)"; exit 1 ;;
+        esac
+
+        cache_root="${RUNNER_TOOL_CACHE:-/opt/hostedtoolcache}"
+        wrapper=false
+        if [ "$TERRAFORM_WRAPPER" = true ]; then wrapper=true; fi
+        dest="$cache_root/terraform/$version/$arch/wrapper-$wrapper"
+        mkdir -p "$dest"
+        echo "dest=$dest" >> "$GITHUB_OUTPUT"
+
+        binary=terraform
+        if [ "$TERRAFORM_WRAPPER" = true ]; then binary=terraform-bin; fi
+        if [ -x "$dest/terraform" ] && [ -x "$dest/$binary" ] && [ "$(CHECKPOINT_DISABLE=1 "$dest/$binary" version 2>/dev/null | head -n 1)" = "Terraform v$version" ]; then
+          echo "$dest" >> "$GITHUB_PATH"
+          if [ "$TERRAFORM_WRAPPER" = true ]; then
+            echo "TERRAFORM_CLI_PATH=$dest" >> "$GITHUB_ENV"
+          fi
+          echo "cache-hit=true" >> "$GITHUB_OUTPUT"
+          echo "Reusing cached terraform v$version at $dest (added to GITHUB_PATH)"
+        else
+          echo "terraform v$version not found in tool cache ($dest); hashicorp/setup-terraform will install it"
+        fi
+
+    - name: Install Terraform CLI
+      if: steps.cache.outputs.cache-hit != 'true'
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ inputs.terraform_version }}
+        terraform_wrapper: ${{ inputs.terraform_wrapper }}
+
+    - name: Save Terraform CLI to tool cache
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        TERRAFORM_CACHE_DIR: ${{ steps.cache.outputs.dest }}
+        TERRAFORM_WRAPPER: ${{ inputs.terraform_wrapper }}
+      run: |
+        set -euo pipefail
+        source_dir="$(dirname "$(command -v terraform)")"
+        cp "$source_dir/terraform" "$TERRAFORM_CACHE_DIR/terraform"
+        if [ "$TERRAFORM_WRAPPER" = true ]; then
+          cp "$source_dir/terraform-bin" "$TERRAFORM_CACHE_DIR/terraform-bin"
+          echo "TERRAFORM_CLI_PATH=$TERRAFORM_CACHE_DIR" >> "$GITHUB_ENV"
+        fi
+        echo "$TERRAFORM_CACHE_DIR" >> "$GITHUB_PATH"
