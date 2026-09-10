@@ -11,7 +11,7 @@ with the job token).
 | [`nas-cache`](nas-cache/) | Per-repo Go/npm/pip/Pulumi/Cargo/Lindera caches on the shared runner NAS (`${RUNNER_CACHE}/<org>/<repo>/...`) |
 | [`pingkai-cache`](pingkai-cache/) | OSS-backed `actions/cache` drop-in (wraps pinned `runs-on/cache`) for CN runner pools; credentials via org secrets inputs, backend via `PINGKAI_CACHE_*` env vars, GC via bucket lifecycle |
 | [`setup-pulumi`](setup-pulumi/) | Reuse/install the Pulumi CLI in the shared runner tool cache and prepend it to `GITHUB_PATH` so `pulumi/actions` skips its reinstall |
-| [`setup-terraform`](setup-terraform/) | Reuse Terraform CLI from the shared runner tool cache; install with `hashicorp/setup-terraform@v3` only on a miss |
+| [`setup-terraform`](setup-terraform/) | Reuse Terraform CLI from the shared runner tool cache; install with `hashicorp/setup-terraform@v3` skips its reinstall |
 
 ## Usage
 
@@ -37,51 +37,6 @@ credentials.json would let them clobber each other's current backend.
 Plugin downloads are guarded by Pulumi's per-plugin lock files; the
 NFSv4.0 PV provides the cross-client file locks they rely on.
 
-```yaml
-- uses: pingkaicloud/actions/setup-pulumi@v1
-  with:
-    pulumi-version: '3.228.0'
-```
-
-`setup-pulumi` replaces the standalone "Install Pulumi CLI" step. It checks
-`$RUNNER_TOOL_CACHE/pulumi/<version>/<arch>` first: on a hit the directory is
-prepended to `GITHUB_PATH` and the embedded install-only `pulumi/actions@v6`
-step logs "already installed ... Skipping download" without touching
-api.pulumi.com; on a miss the embedded step installs as usual and its
-tool-cache registration warms the cache for later jobs. Either way later
-`pulumi/actions` preview/up steps in the job pin the same version and also
-skip their reinstall.
-
-```yaml
-- uses: pingkaicloud/actions/setup-terraform@v1
-  with:
-    terraform_version: '1.9.8'
-```
-
-`setup-terraform` exposes the same four inputs and defaults as
-`hashicorp/setup-terraform@v3`: `terraform_version` (default `latest`),
-`terraform_wrapper` (default `true`), `cli_config_credentials_hostname`
-(default `app.terraform.io`), and `cli_config_credentials_token`.
-
-For an exact release version, it checks
-`$RUNNER_TOOL_CACHE/terraform/<version>/<arch>/wrapper-<true|false>` and runs
-`terraform version`. On a match it adds the directory to `GITHUB_PATH` and
-skips installation. On a miss it calls upstream with all four inputs unchanged,
-sets that step's `RUNNER_TEMP` to the cache directory, and copies the extracted
-CLI and optional wrapper to the fixed path. Wrapper activation also sets
-`TERRAFORM_CLI_PATH`; credentials are configured on both hits and misses.
-
-`latest` and version constraints are resolved by upstream on each run, with
-`RUNNER_TEMP` under `$RUNNER_TOOL_CACHE/terraform/downloads`. The cache root
-defaults to `/opt/hostedtoolcache`.
-
-Requires the runner scale set to export `RUNNER_CACHE` (NAS mount).
-The NAS mount must provide cross-client file locking because Go coordinates
-concurrent module downloads with file locks and Cargo uses two shared package
-cache lock files. Go, npm, and pip caches are isolated by repository. Explicit
-cache keys provide additional isolation; keys are retained until a separate,
-active-runner-aware cleanup job removes them.
-
 All cache-key inputs are optional. Without an explicit key, each tool uses its
 repository-scoped fixed `default` directory. Explicit keys use separate
 `keys/<key>` directories and do not support restore prefixes or copying from
@@ -103,6 +58,49 @@ holding the lock. Check the ready file both before and after acquiring the lock.
 Lindera's build script uses fixed temporary paths and is not safe for concurrent
 cold starts. Include all manifests that affect Lindera features in the cache key
 so a ready marker cannot hide a changed dictionary set.
+
+The `nas-cache` action requires the runner scale set to export `RUNNER_CACHE`
+(NAS mount).
+The NAS mount must provide cross-client file locking because Go coordinates
+concurrent module downloads with file locks and Cargo uses two shared package
+cache lock files. Go, npm, and pip caches are isolated by repository. Explicit
+cache keys provide additional isolation; keys are retained until a separate,
+active-runner-aware cleanup job removes them.
+
+```yaml
+- uses: pingkaicloud/actions/setup-pulumi@v1
+  with:
+    pulumi-version: '3.228.0'
+```
+
+`setup-pulumi` replaces the standalone "Install Pulumi CLI" step. It checks
+`$RUNNER_TOOL_CACHE/pulumi/<version>/<arch>` first: on a hit the directory is
+prepended to `GITHUB_PATH` and the embedded install-only `pulumi/actions@v6`
+step logs "already installed ... Skipping download" without touching
+api.pulumi.com; on a miss the embedded step installs as usual and its
+tool-cache registration warms the cache for later jobs. Either way later
+`pulumi/actions` preview/up steps in the job pin the same version and also
+skip their reinstall.
+
+```yaml
+- uses: pingkaicloud/actions/setup-terraform@v1
+  with:
+    terraform_version: '1.9.8'
+```
+
+`setup-terraform` accepts `terraform_version` (required, an exact release
+version such as `1.9.8`, optionally prefixed with `v`) and `terraform_wrapper`
+(default `true`).
+
+It checks `$RUNNER_TOOL_CACHE/terraform/<version>/<arch>/wrapper-<true|false>`
+and runs `terraform version`. On a match it reuses the cached installation
+and skips `hashicorp/setup-terraform@v3`. On a miss it calls that action with
+both inputs to install into the runner's default temporary directory, then
+copies the CLI and optional wrapper to the fixed cache path for later jobs.
+In both cases, the fixed cache directory is added to `GITHUB_PATH` for
+subsequent steps. When the wrapper is enabled, `TERRAFORM_CLI_PATH` is also
+set to that directory so it can find the cached binary. The cache root
+defaults to `/opt/hostedtoolcache`.
 
 ## Conventions
 

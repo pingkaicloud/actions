@@ -1,20 +1,24 @@
 name: setup-terraform
-description: Reuse Terraform CLI from the runner tool cache, installing with hashicorp/setup-terraform@v3 on a miss.
+description: >
+  Make the requested Terraform CLI available for the job: reuse it from the
+  shared runner tool cache (NAS-backed RUNNER_TOOL_CACHE) when present. On a
+  cache hit, skip hashicorp/setup-terraform@v3 entirely; on a miss, run it to
+  install the CLI and copy the installation into the tool cache, warming it
+  for later jobs. Either way terraform is on GITHUB_PATH for the rest of the
+  job. When enabled, the wrapper is cached alongside the CLI and
+  TERRAFORM_CLI_PATH is set so it can locate the cached binary.
 
 inputs:
-  cli_config_credentials_hostname:
-    description: 'The hostname of a HCP Terraform/Terraform Enterprise instance to place within the credentials block of the Terraform CLI configuration file. Defaults to `app.terraform.io`.'
-    default: 'app.terraform.io'
-    required: false
-  cli_config_credentials_token:
-    description: 'The API token for a HCP Terraform/Terraform Enterprise instance to place within the credentials block of the Terraform CLI configuration file.'
-    required: false
   terraform_version:
-    description: 'The version of Terraform CLI to install. Instead of full version string you can also specify constraint string starting with "<" (for example `<1.13.0`) to install the latest version satisfying the constraint. A value of `latest` will install the latest version of Terraform CLI. Defaults to `latest`.'
-    default: 'latest'
-    required: false
+    description: >
+      Exact Terraform CLI version, e.g. 1.9.8. A leading "v" is accepted.
+      Must match the version pinned by the hashicorp/setup-terraform steps in the job.
+    required: true
   terraform_wrapper:
-    description: 'Whether or not to install a wrapper to wrap subsequent calls of the `terraform` binary and expose its STDOUT, STDERR, and exit code as outputs named `stdout`, `stderr`, and `exitcode` respectively. Defaults to `true`.'
+    description: >
+      Whether or not to install a wrapper to wrap subsequent calls of the
+      `terraform` binary and expose its STDOUT, STDERR, and exit code as outputs
+      named `stdout`, `stderr`, and `exitcode` respectively. Defaults to `true`.
     default: 'true'
     required: false
 
@@ -29,22 +33,21 @@ runs:
         TERRAFORM_WRAPPER: ${{ inputs.terraform_wrapper }}
       run: |
         set -euo pipefail
-        cache_root="${RUNNER_TOOL_CACHE:-/opt/hostedtoolcache}"
+
         version="${TERRAFORM_VERSION#v}"
-        wrapper=false
-        if [ "$TERRAFORM_WRAPPER" = true ]; then wrapper=true; fi
+        case "$version" in
+          ''|*[!0-9.]*) echo "::error::invalid terraform_version: ${TERRAFORM_VERSION}" && exit 1 ;;
+        esac
         case "$(uname -m)" in
           x86_64) arch=x64 ;;
           aarch64|arm64) arch=arm64 ;;
           *) echo "::error::unsupported architecture $(uname -m)"; exit 1 ;;
         esac
 
-        # Let upstream resolve moving versions on every run.
-        dest="$cache_root/terraform/downloads"
-        if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-          dest="$cache_root/terraform/$version/$arch/wrapper-$wrapper"
-          echo "cacheable=true" >> "$GITHUB_OUTPUT"
-        fi
+        cache_root="${RUNNER_TOOL_CACHE:-/opt/hostedtoolcache}"
+        wrapper=false
+        if [ "$TERRAFORM_WRAPPER" = true ]; then wrapper=true; fi
+        dest="$cache_root/terraform/$version/$arch/wrapper-$wrapper"
         mkdir -p "$dest"
         echo "dest=$dest" >> "$GITHUB_OUTPUT"
 
@@ -56,36 +59,20 @@ runs:
             echo "TERRAFORM_CLI_PATH=$dest" >> "$GITHUB_ENV"
           fi
           echo "cache-hit=true" >> "$GITHUB_OUTPUT"
-          echo "Reusing cached Terraform v$version at $dest"
+          echo "Reusing cached terraform v$version at $dest (added to GITHUB_PATH)"
+        else
+          echo "terraform v$version not found in tool cache ($dest); hashicorp/setup-terraform will install it"
         fi
-
-    - name: Configure credentials on cache hit
-      if: steps.cache.outputs.cache-hit == 'true' && inputs.cli_config_credentials_hostname != '' && inputs.cli_config_credentials_token != ''
-      shell: bash
-      env:
-        CREDENTIALS_HOSTNAME: ${{ inputs.cli_config_credentials_hostname }}
-        CREDENTIALS_TOKEN: ${{ inputs.cli_config_credentials_token }}
-      run: |
-        set -euo pipefail
-        config_file="${TF_CLI_CONFIG_FILE:-$HOME/.terraformrc}"
-        mkdir -p "$(dirname "$config_file")"
-        umask 077
-        printf 'credentials "%s" {\n  token = "%s"\n}\n' \
-          "$CREDENTIALS_HOSTNAME" "$CREDENTIALS_TOKEN" > "$config_file"
 
     - name: Install Terraform CLI
       if: steps.cache.outputs.cache-hit != 'true'
       uses: hashicorp/setup-terraform@v3
-      env:
-        RUNNER_TEMP: ${{ steps.cache.outputs.dest }}
       with:
-        cli_config_credentials_hostname: ${{ inputs.cli_config_credentials_hostname }}
-        cli_config_credentials_token: ${{ inputs.cli_config_credentials_token }}
         terraform_version: ${{ inputs.terraform_version }}
         terraform_wrapper: ${{ inputs.terraform_wrapper }}
 
     - name: Save Terraform CLI to tool cache
-      if: steps.cache.outputs.cache-hit != 'true' && steps.cache.outputs.cacheable == 'true'
+      if: steps.cache.outputs.cache-hit != 'true'
       shell: bash
       env:
         TERRAFORM_CACHE_DIR: ${{ steps.cache.outputs.dest }}
