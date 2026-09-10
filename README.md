@@ -11,7 +11,7 @@ with the job token).
 | [`nas-cache`](nas-cache/) | Per-repo Go/npm/pip/Pulumi/Cargo/Lindera caches on the shared runner NAS (`${RUNNER_CACHE}/<org>/<repo>/...`) |
 | [`pingkai-cache`](pingkai-cache/) | OSS-backed `actions/cache` drop-in (wraps pinned `runs-on/cache`) for CN runner pools; credentials via org secrets inputs, backend via `PINGKAI_CACHE_*` env vars, GC via bucket lifecycle |
 | [`setup-pulumi`](setup-pulumi/) | Reuse/install the Pulumi CLI in the shared runner tool cache and prepend it to `GITHUB_PATH` so `pulumi/actions` skips its reinstall |
-| [`setup-terraform`](setup-terraform/) | Install Terraform CLI and its optional wrapper under the shared runner tool cache using `hashicorp/setup-terraform@v3` |
+| [`setup-terraform`](setup-terraform/) | Reuse Terraform CLI from the shared runner tool cache; install with `hashicorp/setup-terraform@v3` only on a miss |
 
 ## Usage
 
@@ -59,21 +59,28 @@ skip their reinstall.
     terraform-wrapper: 'true'
 ```
 
-`setup-terraform` runs `hashicorp/setup-terraform@v3` as its final step.
-It sets `RUNNER_TEMP` only for that step to a unique directory under
-`${RUNNER_TOOL_CACHE:-/opt/hostedtoolcache}/terraform/install.<random>`.
-The downloaded archive, extracted CLI, and optional wrapper all stay beneath
-that directory; upstream adds the extracted directory to `GITHUB_PATH` and
-sets `TERRAFORM_CLI_PATH` when the wrapper is enabled. Other steps retain their
-original `RUNNER_TEMP`. This Bash action targets Linux and macOS runners.
+`setup-terraform` checks the persistent directory
+`${RUNNER_TOOL_CACHE:-/opt/hostedtoolcache}/terraform/<version>/<os>/<arch>/wrapper-<true|false>`.
+On a valid cache hit it adds that directory to `GITHUB_PATH`, restores
+`TERRAFORM_CLI_PATH` for the wrapper, and skips `hashicorp/setup-terraform@v3`
+entirely. On a miss it runs the upstream action, copies the CLI and optional
+wrapper into the fixed cache directory, and activates the cached installation
+for subsequent steps. Temporary files are used only for atomic publication;
+the final installation path is stable and reused across jobs.
 
-Unlike `setup-pulumi`, upstream Terraform setup always downloads the requested
-version, so this controls installation placement but does not provide cache
-hits. Independent directories avoid concurrent jobs overwriting each other's
-CLI or wrapper. These directories persist and require separate cleanup after
-jobs finish. Optional `cli-config-credentials-hostname` and
-`cli-config-credentials-token` inputs are forwarded to upstream; credentials
-retain upstream's job-local configuration location, outside the shared cache.
+`terraform-version` must be an exact release version (a leading `v` is
+accepted); `latest` and version constraints are rejected so cache entries do
+not silently pin a moving version. OS, architecture, and wrapper mode are
+isolated. A completion marker and CLI version check prevent incomplete or
+incorrect installations from being reused. The `cache-hit` output reports
+whether upstream installation was skipped. This Bash action targets Linux
+and macOS runners. With `terraform-wrapper: 'true'`, the cache root must not
+contain whitespace because the upstream wrapper cannot execute such paths.
+
+Optional `cli-config-credentials-hostname` and `cli-config-credentials-token`
+inputs configure credentials on both hits and misses, using
+`TF_CLI_CONFIG_FILE` when set or `~/.terraformrc` otherwise. Keep that file
+job-local; credentials are not part of the tool cache.
 
 Requires the runner scale set to export `RUNNER_CACHE` (NAS mount).
 The NAS mount must provide cross-client file locking because Go coordinates
