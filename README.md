@@ -55,15 +55,25 @@ skip their reinstall.
 ```yaml
 - uses: pingkaicloud/actions/setup-terraform@v1
   with:
-    terraform-version: '1.9.8'
+    terraform_version: '1.9.8'
 ```
 
-`setup-terraform` follows the same pattern as `setup-pulumi`: check
-`$RUNNER_TOOL_CACHE/terraform/<version>/<arch>` and run `terraform version`.
-On a match, add the directory to `GITHUB_PATH` and skip installation. On a
-miss, run `hashicorp/setup-terraform@v3`, copy the CLI into that fixed cache
-path, and add it to `GITHUB_PATH` for subsequent steps. The cache root defaults
-to `/opt/hostedtoolcache`. Only the CLI is installed (`terraform_wrapper: false`).
+`setup-terraform` exposes the same four inputs and defaults as
+`hashicorp/setup-terraform@v3`: `terraform_version` (default `latest`),
+`terraform_wrapper` (default `true`), `cli_config_credentials_hostname`
+(default `app.terraform.io`), and `cli_config_credentials_token`.
+
+For an exact release version, it checks
+`$RUNNER_TOOL_CACHE/terraform/<version>/<arch>/wrapper-<true|false>` and runs
+`terraform version`. On a match it adds the directory to `GITHUB_PATH` and
+skips installation. On a miss it calls upstream with all four inputs unchanged,
+sets that step's `RUNNER_TEMP` to the cache directory, and copies the extracted
+CLI and optional wrapper to the fixed path. Wrapper activation also sets
+`TERRAFORM_CLI_PATH`; credentials are configured on both hits and misses.
+
+`latest` and version constraints are resolved by upstream on each run, with
+`RUNNER_TEMP` under `$RUNNER_TOOL_CACHE/terraform/downloads`. The cache root
+defaults to `/opt/hostedtoolcache`.
 
 Requires the runner scale set to export `RUNNER_CACHE` (NAS mount).
 The NAS mount must provide cross-client file locking because Go coordinates
