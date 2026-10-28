@@ -1,0 +1,48 @@
+#!/bin/sh
+# Managed by pingkaicloud/actions/gitleaks-hooks
+set -eu
+
+PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+export PATH
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+    echo "gitleaks is unavailable; run gitleaks-hooks/setup.sh" >&2
+    exit 1
+fi
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+    case "$local_sha" in
+        0000000000000000000000000000000000000000|\
+        0000000000000000000000000000000000000000000000000000000000000000)
+            continue
+            ;;
+    esac
+
+    tag_object=$local_sha
+    tag_type=$(git cat-file -t "$tag_object") || exit 1
+    while [ "$tag_type" = tag ]; do
+        tag_data=$(git cat-file tag "$tag_object") || exit 1
+        printf '%s\n' "$tag_data" | gitleaks stdin --redact --no-banner
+        tag_object=$(printf '%s\n' "$tag_data" | sed -n '1s/^object //p')
+        [ -n "$tag_object" ] || exit 1
+        tag_type=$(git cat-file -t "$tag_object") || exit 1
+    done
+
+    case "$remote_sha" in
+        0000000000000000000000000000000000000000|\
+        0000000000000000000000000000000000000000000000000000000000000000)
+            # A new remote ref has no old tip. Scan its full reachable history.
+            range="$local_sha"
+            ;;
+        *)
+            if ! git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
+                echo "missing old tip for $remote_ref; fetch the remote and retry" >&2
+                exit 1
+            fi
+            range="$remote_sha..$local_sha"
+            ;;
+    esac
+
+    echo "gitleaks: scanning $remote_ref" >&2
+    gitleaks git --redact --no-banner --log-opts="$range"
+done
