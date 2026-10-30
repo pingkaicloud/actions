@@ -1,0 +1,10 @@
+title = "actions gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Allow gitleaks own artifacts"
+paths = [
+    '''\.gitleaksignore''',
+]
