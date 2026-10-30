@@ -7,4 +7,5 @@ useDefault = true
 description = "Allow gitleaks own artifacts"
 paths = [
     '''\.gitleaksignore''',
+    '''gitleaks-pending-review\.md''',
 ]
