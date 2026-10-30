@@ -1,0 +1,9 @@
+# gitleaks baseline for actions: 4 unique fingerprints over 4 findings (all refs).
+# All four are CI cache-key names (lindera / rust-toolchain), not credentials.
+# NEW leaks are NOT covered and still fail the hooks.
+
+# == CI cache-key names in action tests/docs (处置: 安全-误报) ==
+b24d5891ae6e66eab449ec97f7422892b38a1258:README.md:generic-api-key:26
+b24d5891ae6e66eab449ec97f7422892b38a1258:nas-cache/test.sh:generic-api-key:140
+a2aa8b9aeb4bdf36f05dc000c749722485e5e0c4:setup-rust-toolchain/test.sh:generic-api-key:85
+c9f2a3e15f73791a58bd88c5b406b1b4dd7ab40c:setup-rust-toolchain/test.sh:generic-api-key:376
