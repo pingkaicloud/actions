@@ -1,4 +1,4 @@
-# gitleaks baseline for actions: 4 unique fingerprints over 4 findings (all refs).
+# gitleaks baseline for actions: 4+3=7 unique fingerprints over 4+3=7 findings (all refs).
 # All four are CI cache-key names (lindera / rust-toolchain), not credentials.
 # NEW leaks are NOT covered and still fail the hooks.
 
@@ -7,3 +7,10 @@ b24d5891ae6e66eab449ec97f7422892b38a1258:README.md:generic-api-key:26
 b24d5891ae6e66eab449ec97f7422892b38a1258:nas-cache/test.sh:generic-api-key:140
 a2aa8b9aeb4bdf36f05dc000c749722485e5e0c4:setup-rust-toolchain/test.sh:generic-api-key:85
 c9f2a3e15f73791a58bd88c5b406b1b4dd7ab40c:setup-rust-toolchain/test.sh:generic-api-key:376
+
+# == 误报-已删除分析文档的历史副本（2026-11-05 复检补充） | 处置: 安全 | 3 fingerprints ==
+# gitleaks-pending-review.md（已从主干删除）历史版本原样引用的命中值：lindera-0.43 crate
+# 版本号、20260130repl 分支名等——与 tidbcloud-news state 内容镜像同源的 FP 值
+d48af1037cd12350920d5e74ee8af2f8d9107981:gitleaks-pending-review.md:generic-api-key:19
+d48af1037cd12350920d5e74ee8af2f8d9107981:gitleaks-pending-review.md:generic-api-key:21
+d48af1037cd12350920d5e74ee8af2f8d9107981:gitleaks-pending-review.md:generic-api-key:22
