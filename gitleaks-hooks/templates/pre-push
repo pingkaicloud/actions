@@ -31,8 +31,8 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     case "$remote_sha" in
         0000000000000000000000000000000000000000|\
         0000000000000000000000000000000000000000000000000000000000000000)
-            # A new remote ref has no old tip. Scan its full reachable history.
-            range="$local_sha"
+            # For new refs, exclude history in locally cached remote-tracking refs.
+            range="$local_sha --not --remotes=$1"
             ;;
         *)
             if ! git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
