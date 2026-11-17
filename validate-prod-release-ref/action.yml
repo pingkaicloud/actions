@@ -1,0 +1,97 @@
+name: 'Validate prod release ref'
+description: 'Require an immutable release tag for prod deployments and resolve it to a commit SHA'
+
+inputs:
+  env:
+    description: 'Deployment environment; only prod is validated'
+    required: true
+  git-ref:
+    description: 'Ref to deploy. For prod this must match tag-pattern'
+    required: true
+  dispatch-ref:
+    description: 'github.ref of the workflow dispatch. Prod must come from an allowed branch'
+    required: true
+  github-token:
+    description: 'Token used to resolve refs/tags/<name> through the GitHub API'
+    required: true
+  tag-pattern:
+    description: 'ERE pattern for allowed release tags'
+    required: false
+    default: '^release-v[0-9]+\.[0-9]+\.[0-9]+$'
+  allowed-dispatch-ref-pattern:
+    description: 'ERE pattern for allowed prod dispatch refs'
+    required: false
+    default: '^refs/heads/(pingkai/main|release-v[0-9]+\.[0-9]+)$'
+
+outputs:
+  ref:
+    description: 'Resolved commit SHA for prod; the original git-ref for non-prod'
+    value: ${{ steps.resolve.outputs.ref }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Resolve and validate deployment ref
+      id: resolve
+      shell: bash
+      env:
+        DEPLOY_ENV: ${{ inputs.env }}
+        GIT_REF: ${{ inputs.git-ref }}
+        DISPATCH_REF: ${{ inputs.dispatch-ref }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        TAG_PATTERN: ${{ inputs.tag-pattern }}
+        DISPATCH_REF_PATTERN: ${{ inputs.allowed-dispatch-ref-pattern }}
+      run: |
+        set -euo pipefail
+
+        if [[ "${DEPLOY_ENV}" != "prod" ]]; then
+          echo "ref=${GIT_REF}" >> "$GITHUB_OUTPUT"
+          echo "non-prod deploy; using ${GIT_REF}"
+          exit 0
+        fi
+
+        # The guard itself must come from trusted workflow code. Do not allow
+        # dispatching from the candidate tag, whose copy of the workflow could
+        # have been modified.
+        if [[ ! "${DISPATCH_REF}" =~ ${DISPATCH_REF_PATTERN} ]]; then
+          echo "::error::dispatch prod deployments from a trusted branch (${DISPATCH_REF_PATTERN}), not '${DISPATCH_REF}'"
+          exit 1
+        fi
+
+        if [[ ! "${GIT_REF}" =~ ${TAG_PATTERN} ]]; then
+          echo "::error::prod deploys require an immutable release tag like release-v26.11.1; got '${GIT_REF}'"
+          exit 1
+        fi
+
+        # Resolve refs/tags/<name> explicitly. actions/checkout resolves a bare
+        # name to a branch before a tag, so a same-named branch must not be
+        # allowed to change what gets deployed.
+        tag_json="$(curl -fsSL \
+          -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+          -H "Accept: application/vnd.github+json" \
+          "https://api.github.com/repos/${GITHUB_REPOSITORY}/git/ref/tags/${GIT_REF}")" || {
+            echo "::error::release tag '${GIT_REF}' does not exist on origin"
+            exit 1
+          }
+
+        object_type="$(jq -r '.object.type' <<<"${tag_json}")"
+        sha="$(jq -r '.object.sha' <<<"${tag_json}")"
+
+        # Peel annotated tags (including nested tag objects) to a commit.
+        for _ in 1 2 3; do
+          [[ "${object_type}" == "tag" ]] || break
+          tag_object="$(curl -fsSL \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/git/tags/${sha}")"
+          object_type="$(jq -r '.object.type' <<<"${tag_object}")"
+          sha="$(jq -r '.object.sha' <<<"${tag_object}")"
+        done
+
+        if [[ "${object_type}" != "commit" || ! "${sha}" =~ ^[0-9a-f]{40}$ ]]; then
+          echo "::error::release tag '${GIT_REF}' does not resolve to a commit"
+          exit 1
+        fi
+
+        echo "ref=${sha}" >> "$GITHUB_OUTPUT"
+        echo "prod release tag ${GIT_REF} resolved to ${sha}"

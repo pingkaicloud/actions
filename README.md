@@ -12,6 +12,7 @@ with the job token).
 | [`pingkai-cache`](pingkai-cache/) | OSS-backed `actions/cache` drop-in (wraps pinned `runs-on/cache`) for CN runner pools; credentials via org secrets inputs, backend via `PINGKAI_CACHE_*` env vars, GC via bucket lifecycle |
 | [`setup-pulumi`](setup-pulumi/) | Reuse/install the Pulumi CLI in the shared runner tool cache and prepend it to `GITHUB_PATH` so `pulumi/actions` skips its reinstall |
 | [`setup-terraform`](setup-terraform/) | Reuse Terraform CLI from the shared runner tool cache; install with `hashicorp/setup-terraform@v3` skips its reinstall |
+| [`validate-prod-release-ref`](validate-prod-release-ref/) | Require an immutable `release-vX.Y.Z` tag for prod deployments, resolve it to a commit SHA, and reject dispatches from a candidate tag |
 
 ## Usage
 
@@ -101,6 +102,27 @@ In both cases, the fixed cache directory is added to `GITHUB_PATH` for
 subsequent steps. When the wrapper is enabled, `TERRAFORM_CLI_PATH` is also
 set to that directory so it can find the cached binary. The cache root
 defaults to `/opt/hostedtoolcache`.
+
+```yaml
+- uses: pingkaicloud/actions/validate-prod-release-ref@<sha>
+  id: release_ref
+  with:
+    env: ${{ inputs.env }}
+    git-ref: ${{ inputs.git-ref || github.sha }}
+    dispatch-ref: ${{ github.ref }}
+    github-token: ${{ github.token }}
+
+- uses: actions/checkout@v6
+  with:
+    ref: ${{ steps.release_ref.outputs.ref }}
+```
+
+For non-prod the action returns `git-ref` unchanged. For prod it requires
+`release-vX.Y.Z`, rejects dispatches from the candidate tag, resolves
+`refs/tags/<name>` through the GitHub API (peeling annotated tags), and
+returns the commit SHA. Consumers must check out the returned `ref`, not the
+bare tag name: `actions/checkout` resolves a bare name to a branch before a
+tag, so a branch/tag name collision could otherwise change the deployment.
 
 ## Conventions
 
